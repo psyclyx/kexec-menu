@@ -31,21 +31,26 @@ fn run(dry_run: bool) -> Result<(), Box<dyn std::fmt::Display>> {
         process::exit(1);
     }
 
-    // Build boot trees for each mounted source
+    // Build boot trees for each source (1:1 with sources vec)
     let mut trees: Vec<(String, Vec<TreeNode>)> = Vec::new();
     for src in &sources {
-        if let SourceState::Mounted = &src.state {
-            if let Some(mp) = &src.mount_point {
-                let boot_dir = mp.join("boot");
-                if boot_dir.is_dir() {
-                    match tree::walk_boot_tree(&boot_dir) {
-                        Ok(nodes) => trees.push((src.label.clone(), nodes)),
-                        Err(_) => trees.push((src.label.clone(), Vec::new())),
+        match &src.state {
+            SourceState::Mounted => {
+                if let Some(mp) = &src.mount_point {
+                    let boot_dir = mp.join("boot");
+                    if boot_dir.is_dir() {
+                        match tree::walk_boot_tree(&boot_dir) {
+                            Ok(nodes) => trees.push((src.label.clone(), nodes)),
+                            Err(_) => trees.push((src.label.clone(), Vec::new())),
+                        }
+                    } else {
+                        trees.push((src.label.clone(), Vec::new()));
                     }
                 } else {
                     trees.push((src.label.clone(), Vec::new()));
                 }
             }
+            _ => trees.push((src.label.clone(), Vec::new())),
         }
     }
 
