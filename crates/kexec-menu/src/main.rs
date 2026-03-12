@@ -115,6 +115,9 @@ fn run_tui(
             tui::Screen::Passphrase { source_label, input: pw_input, error, .. } => {
                 tui::render_passphrase(&mut output, source_label, pw_input, error.as_deref())?;
             }
+            tui::Screen::FileBrowser { source_label, current_dir, root, menu, .. } => {
+                tui::render_file_browser(&mut output, source_label, current_dir, root, menu)?;
+            }
         }
 
         let key = tui::read_key(&mut input)?;
@@ -179,6 +182,22 @@ fn run_tui(
                             }
                         }
                     }
+                    tui::Action::OpenFileBrowser => {
+                        let si = *source_idx;
+                        if let Some(mp) = &sources[si].mount_point {
+                            let root = mp.clone();
+                            if let Ok((file_menu, dir_entries)) = tui::build_file_menu(&root) {
+                                screen = tui::Screen::FileBrowser {
+                                    source_idx: si,
+                                    source_label: source_label.clone(),
+                                    current_dir: root.clone(),
+                                    root,
+                                    menu: file_menu,
+                                    dir_entries,
+                                };
+                            }
+                        }
+                    }
                     tui::Action::Redraw => {}
                     _ => {}
                 }
@@ -203,6 +222,47 @@ fn run_tui(
                             leaf_path: leaf_path.clone(),
                             entry,
                         });
+                    }
+                    tui::Action::Redraw => {}
+                    _ => {}
+                }
+            }
+            tui::Screen::FileBrowser {
+                source_idx, source_label, current_dir, root, menu, dir_entries,
+            } => {
+                match tui::handle_file_browser_key(menu, dir_entries, current_dir, root, &key) {
+                    tui::Action::OpenDir(idx) => {
+                        if let Some(entry) = dir_entries.get(idx) {
+                            let new_dir = entry.path.clone();
+                            if let Ok((file_menu, new_entries)) = tui::build_file_menu(&new_dir) {
+                                *current_dir = new_dir;
+                                *menu = file_menu;
+                                *dir_entries = new_entries;
+                            }
+                        }
+                    }
+                    tui::Action::DirUp => {
+                        if let Some(parent) = current_dir.parent() {
+                            let parent = parent.to_path_buf();
+                            if let Ok((file_menu, new_entries)) = tui::build_file_menu(&parent) {
+                                *current_dir = parent;
+                                *menu = file_menu;
+                                *dir_entries = new_entries;
+                            }
+                        }
+                    }
+                    tui::Action::Back => {
+                        // Return to boot tree
+                        let si = *source_idx;
+                        let label = source_label.clone();
+                        let tree = trees.get(si).map(|(_, t)| t.as_slice()).unwrap_or(&[]);
+                        let (tree_menu, nodes) = tui::build_tree_menu(tree, default);
+                        screen = tui::Screen::BootTree {
+                            source_idx: si,
+                            source_label: label,
+                            menu: tree_menu,
+                            nodes,
+                        };
                     }
                     tui::Action::Redraw => {}
                     _ => {}

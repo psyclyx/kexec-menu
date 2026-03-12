@@ -165,6 +165,26 @@ pub enum Screen {
         input: String,
         error: Option<String>,
     },
+    /// Full filesystem browser for a source.
+    FileBrowser {
+        source_idx: usize,
+        source_label: String,
+        /// Current directory being browsed.
+        current_dir: std::path::PathBuf,
+        /// Root of the mount (can't go above this).
+        root: std::path::PathBuf,
+        menu: Menu,
+        /// Directory entries corresponding to menu items.
+        dir_entries: Vec<DirEntry>,
+    },
+}
+
+/// An entry in a directory listing for the file browser.
+#[derive(Debug, Clone)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub path: std::path::PathBuf,
 }
 
 /// A flattened tree node for display.
@@ -550,6 +570,12 @@ pub enum Action {
     UnlockSource(usize),
     /// Submit entered passphrase.
     SubmitPassphrase,
+    /// Open full filesystem browser for the current source.
+    OpenFileBrowser,
+    /// Navigate into a directory in the file browser.
+    OpenDir(usize),
+    /// Go up one directory in the file browser.
+    DirUp,
 }
 
 /// Handle a key press on a source list screen.
@@ -587,6 +613,7 @@ pub fn handle_tree_key(menu: &mut Menu, nodes: &[FlatNode], key: &Key) -> Action
             }
         }
         Key::Escape => Action::Back,
+        Key::Char('f') | Key::Char('F') => Action::OpenFileBrowser,
         _ => Action::None,
     }
 }
@@ -612,6 +639,102 @@ pub fn handle_entry_key(
             }
         }
         Key::Escape => Action::Back,
+        _ => Action::None,
+    }
+}
+
+// --- File browser ---
+
+/// List directory contents and build a menu for the file browser.
+pub fn build_file_menu(dir: &std::path::Path) -> io::Result<(Menu, Vec<DirEntry>)> {
+    let mut entries = Vec::new();
+    let mut read_dir: Vec<_> = std::fs::read_dir(dir)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    read_dir.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    for de in read_dir {
+        let name = de.file_name().to_string_lossy().into_owned();
+        let ft = de.file_type()?;
+        entries.push(DirEntry {
+            name,
+            is_dir: ft.is_dir(),
+            path: de.path(),
+        });
+    }
+
+    let items: Vec<MenuItem> = entries
+        .iter()
+        .map(|e| MenuItem {
+            label: if e.is_dir {
+                format!("{}/", e.name)
+            } else {
+                e.name.clone()
+            },
+            detail: String::new(),
+            state: ItemState::Normal,
+        })
+        .collect();
+
+    Ok((Menu::new(items, None), entries))
+}
+
+/// Render the file browser screen.
+pub fn render_file_browser(
+    w: &mut impl Write,
+    source_label: &str,
+    current_dir: &std::path::Path,
+    root: &std::path::Path,
+    menu: &Menu,
+) -> io::Result<()> {
+    let rel = current_dir
+        .strip_prefix(root)
+        .unwrap_or(current_dir);
+    let path_display = if rel.as_os_str().is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", rel.display())
+    };
+    let breadcrumb = format!("{source_label} [fs]");
+    render_menu(
+        w,
+        &path_display,
+        &breadcrumb,
+        menu,
+        "↑↓ navigate  Enter open  Esc back  b boot tree",
+    )
+}
+
+/// Handle a key press on the file browser screen.
+pub fn handle_file_browser_key(
+    menu: &mut Menu,
+    dir_entries: &[DirEntry],
+    current_dir: &std::path::Path,
+    root: &std::path::Path,
+    key: &Key,
+) -> Action {
+    match key {
+        Key::Up => { menu.move_up(); Action::Redraw }
+        Key::Down => { menu.move_down(); Action::Redraw }
+        Key::Enter => {
+            let idx = menu.selected_index();
+            if let Some(entry) = dir_entries.get(idx) {
+                if entry.is_dir {
+                    Action::OpenDir(idx)
+                } else {
+                    Action::None
+                }
+            } else {
+                Action::None
+            }
+        }
+        Key::Escape | Key::Char('b') | Key::Char('B') => {
+            // If we're deeper than root, go up one dir; otherwise back to boot tree
+            if current_dir != root {
+                Action::DirUp
+            } else {
+                Action::Back
+            }
+        }
         _ => Action::None,
     }
 }
@@ -958,5 +1081,167 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Error:"));
         assert!(output.contains("bad passphrase"));
+    }
+
+    // --- File browser tests ---
+
+    fn make_tempdir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kexec-tui-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn build_file_menu_lists_entries() {
+        let tmp = make_tempdir();
+        std::fs::create_dir(tmp.join("subdir")).unwrap();
+        std::fs::write(tmp.join("file.txt"), "hello").unwrap();
+
+        let (menu, entries) = build_file_menu(&tmp).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(menu.items.len(), 2);
+
+        // Sorted: file.txt before subdir
+        assert_eq!(entries[0].name, "file.txt");
+        assert!(!entries[0].is_dir);
+        assert_eq!(entries[1].name, "subdir");
+        assert!(entries[1].is_dir);
+
+        // Dir entry has trailing slash in label
+        assert_eq!(menu.items[1].label, "subdir/");
+        assert_eq!(menu.items[0].label, "file.txt");
+    }
+
+    #[test]
+    fn build_file_menu_empty_dir() {
+        let tmp = make_tempdir();
+        let (menu, entries) = build_file_menu(&tmp).unwrap();
+        assert!(entries.is_empty());
+        assert!(menu.is_empty());
+    }
+
+    #[test]
+    fn file_browser_enter_on_dir_opens() {
+        let entries = vec![DirEntry {
+            name: "subdir".into(),
+            is_dir: true,
+            path: PathBuf::from("/mnt/subdir"),
+        }];
+        let items = vec![MenuItem {
+            label: "subdir/".into(),
+            detail: String::new(),
+            state: ItemState::Normal,
+        }];
+        let mut menu = Menu::new(items, None);
+        let root = PathBuf::from("/mnt");
+        let current = PathBuf::from("/mnt");
+        let action = handle_file_browser_key(&mut menu, &entries, &current, &root, &Key::Enter);
+        assert!(matches!(action, Action::OpenDir(0)));
+    }
+
+    #[test]
+    fn file_browser_enter_on_file_noop() {
+        let entries = vec![DirEntry {
+            name: "file.txt".into(),
+            is_dir: false,
+            path: PathBuf::from("/mnt/file.txt"),
+        }];
+        let items = vec![MenuItem {
+            label: "file.txt".into(),
+            detail: String::new(),
+            state: ItemState::Normal,
+        }];
+        let mut menu = Menu::new(items, None);
+        let root = PathBuf::from("/mnt");
+        let current = PathBuf::from("/mnt");
+        let action = handle_file_browser_key(&mut menu, &entries, &current, &root, &Key::Enter);
+        assert!(matches!(action, Action::None));
+    }
+
+    #[test]
+    fn file_browser_escape_at_root_goes_back() {
+        let entries = vec![];
+        let mut menu = Menu::new(vec![], None);
+        let root = PathBuf::from("/mnt");
+        let current = PathBuf::from("/mnt");
+        let action = handle_file_browser_key(&mut menu, &entries, &current, &root, &Key::Escape);
+        assert!(matches!(action, Action::Back));
+    }
+
+    #[test]
+    fn file_browser_escape_in_subdir_goes_up() {
+        let entries = vec![];
+        let mut menu = Menu::new(vec![], None);
+        let root = PathBuf::from("/mnt");
+        let current = PathBuf::from("/mnt/subdir");
+        let action = handle_file_browser_key(&mut menu, &entries, &current, &root, &Key::Escape);
+        assert!(matches!(action, Action::DirUp));
+    }
+
+    #[test]
+    fn file_browser_b_at_root_goes_back() {
+        let entries = vec![];
+        let mut menu = Menu::new(vec![], None);
+        let root = PathBuf::from("/mnt");
+        let current = PathBuf::from("/mnt");
+        let action = handle_file_browser_key(&mut menu, &entries, &current, &root, &Key::Char('b'));
+        assert!(matches!(action, Action::Back));
+    }
+
+    #[test]
+    fn render_file_browser_output() {
+        let mut buf = Vec::new();
+        let items = vec![MenuItem {
+            label: "subdir/".into(),
+            detail: String::new(),
+            state: ItemState::Normal,
+        }];
+        let menu = Menu::new(items, None);
+        let root = PathBuf::from("/mnt");
+        let current = PathBuf::from("/mnt/boot");
+        render_file_browser(&mut buf, "my-disk", &current, &root, &menu).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("kexec-menu"));
+        assert!(output.contains("my-disk [fs]"));
+        assert!(output.contains("/boot"));
+        assert!(output.contains("subdir/"));
+        assert!(output.contains("boot tree"));
+    }
+
+    #[test]
+    fn render_file_browser_at_root() {
+        let mut buf = Vec::new();
+        let menu = Menu::new(vec![], None);
+        let root = PathBuf::from("/mnt");
+        render_file_browser(&mut buf, "disk", &root, &root, &menu).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("/"));
+    }
+
+    #[test]
+    fn tree_key_f_opens_file_browser() {
+        let nodes = vec![FlatNode {
+            depth: 0,
+            kind: FlatNodeKind::Leaf {
+                name: "gen1".into(),
+                entry_count: 1,
+                path: PathBuf::from("/boot/gen1"),
+            },
+        }];
+        let items = vec![MenuItem {
+            label: "gen1".into(),
+            detail: "1 entries".into(),
+            state: ItemState::Normal,
+        }];
+        let mut menu = Menu::new(items, None);
+        let action = handle_tree_key(&mut menu, &nodes, &Key::Char('f'));
+        assert!(matches!(action, Action::OpenFileBrowser));
     }
 }
