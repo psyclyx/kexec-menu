@@ -501,50 +501,6 @@ impl TreeView {
     }
 }
 
-// --- Screen state machine ---
-
-pub enum Screen {
-    /// Top-level source list.
-    Sources(Menu),
-    /// Boot tree for a specific source. `source_idx` tracks which source.
-    BootTree {
-        source_idx: usize,
-        source_label: String,
-        /// Flattened tree items with indentation level.
-        menu: Menu,
-        /// Map from menu index to tree path info.
-        nodes: Vec<FlatNode>,
-    },
-    /// Entry list for a specific leaf.
-    Entries {
-        source_idx: usize,
-        source_label: String,
-        leaf_label: String,
-        leaf_path: std::path::PathBuf,
-        menu: Menu,
-        entries: Vec<Entry>,
-    },
-    /// Passphrase prompt for an encrypted source.
-    Passphrase {
-        source_idx: usize,
-        source_label: String,
-        input: String,
-        error: Option<String>,
-    },
-    /// Full filesystem browser for a source.
-    FileBrowser {
-        source_idx: usize,
-        source_label: String,
-        /// Current directory being browsed.
-        current_dir: std::path::PathBuf,
-        /// Root of the mount (can't go above this).
-        root: std::path::PathBuf,
-        menu: Menu,
-        /// Directory entries corresponding to menu items.
-        dir_entries: Vec<DirEntry>,
-    },
-}
-
 /// An entry in a directory listing for the file browser.
 #[derive(Debug, Clone)]
 pub struct DirEntry {
@@ -552,163 +508,6 @@ pub struct DirEntry {
     pub is_dir: bool,
     pub is_bootable: bool,
     pub path: std::path::PathBuf,
-}
-
-/// A flattened tree node for display.
-#[derive(Debug, Clone)]
-pub struct FlatNode {
-    pub depth: usize,
-    pub kind: FlatNodeKind,
-}
-
-#[derive(Debug, Clone)]
-pub enum FlatNodeKind {
-    Dir { name: String },
-    Leaf { name: String, entry_count: usize, path: std::path::PathBuf },
-}
-
-/// Flatten a tree into a list of FlatNodes for display.
-pub fn flatten_tree(nodes: &[TreeNode], depth: usize) -> Vec<FlatNode> {
-    let mut flat = Vec::new();
-    for node in nodes {
-        match node {
-            TreeNode::Dir { name, children } => {
-                flat.push(FlatNode {
-                    depth,
-                    kind: FlatNodeKind::Dir { name: name.clone() },
-                });
-                flat.extend(flatten_tree(children, depth + 1));
-            }
-            TreeNode::Leaf(leaf) => {
-                let name = leaf
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| leaf.path.to_string_lossy().into_owned());
-                flat.push(FlatNode {
-                    depth,
-                    kind: FlatNodeKind::Leaf {
-                        name,
-                        entry_count: leaf.entries.len(),
-                        path: leaf.path.clone(),
-                    },
-                });
-            }
-        }
-    }
-    flat
-}
-
-/// Build a source menu from a list of sources.
-pub fn build_source_menu(
-    sources: &[Source],
-    default: Option<&BootSelection>,
-    trees: &[(String, Vec<TreeNode>)],
-) -> Menu {
-    let mut preselected = None;
-    let items: Vec<MenuItem> = sources
-        .iter()
-        .enumerate()
-        .map(|(i, src)| {
-            let state_label = match &src.state {
-                SourceState::Mounted => "",
-                SourceState::Encrypted => " [locked]",
-                SourceState::Error(_) => " [error]",
-                SourceState::Static => " [static]",
-            };
-            let item_state = match &src.state {
-                SourceState::Mounted | SourceState::Static => ItemState::Normal,
-                SourceState::Encrypted => ItemState::Locked,
-                SourceState::Error(e) => ItemState::Error(e.clone()),
-            };
-
-            // Pre-select the source containing the default leaf
-            if preselected.is_none() {
-                if let Some(sel) = default {
-                    if let Some((_, tree)) = trees.get(i) {
-                        if tree_contains_path(tree, &sel.leaf_path) {
-                            preselected = Some(i);
-                        }
-                    }
-                }
-            }
-
-            MenuItem {
-                label: src.label.clone(),
-                detail: format!("{}{}", src.device.display(), state_label),
-                state: item_state,
-            }
-        })
-        .collect();
-
-    Menu::new(items, preselected)
-}
-
-/// Build a boot tree menu for a source.
-pub fn build_tree_menu(
-    tree: &[TreeNode],
-    default: Option<&BootSelection>,
-) -> (Menu, Vec<FlatNode>) {
-    let flat = flatten_tree(tree, 0);
-    let preselected = default.and_then(|sel| {
-        flat.iter().position(|n| match &n.kind {
-            FlatNodeKind::Leaf { path, .. } => *path == sel.leaf_path,
-            _ => false,
-        })
-    });
-    let items: Vec<MenuItem> = flat
-        .iter()
-        .map(|n| {
-            let indent = "  ".repeat(n.depth);
-            match &n.kind {
-                FlatNodeKind::Dir { name } => MenuItem {
-                    label: format!("{indent}{name}/"),
-                    detail: String::new(),
-                    state: ItemState::Normal,
-                },
-                FlatNodeKind::Leaf { name, entry_count, path } => {
-                    let is_default = default
-                        .map(|s| s.leaf_path == *path)
-                        .unwrap_or(false);
-                    MenuItem {
-                        label: format!("{indent}{name}"),
-                        detail: format!("{entry_count} entries"),
-                        state: if is_default { ItemState::Default } else { ItemState::Normal },
-                    }
-                }
-            }
-        })
-        .collect();
-
-    (Menu::new(items, preselected), flat)
-}
-
-/// Build an entry menu for a leaf.
-pub fn build_entry_menu(
-    entries: &[Entry],
-    default: Option<&BootSelection>,
-    leaf_path: &std::path::Path,
-) -> Menu {
-    let preselected = default.and_then(|sel| {
-        if sel.leaf_path == leaf_path {
-            entries.iter().position(|e| e.name == sel.entry_name)
-        } else {
-            None
-        }
-    });
-    let items: Vec<MenuItem> = entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| {
-            let is_default = preselected == Some(i);
-            MenuItem {
-                label: e.name.clone(),
-                detail: e.cmdline.clone(),
-                state: if is_default { ItemState::Default } else { ItemState::Normal },
-            }
-        })
-        .collect();
-    Menu::new(items, preselected)
 }
 
 fn tree_contains_path(nodes: &[TreeNode], path: &std::path::Path) -> bool {
@@ -804,49 +603,6 @@ pub fn render_menu(
     reset_style(w)?;
 
     w.flush()
-}
-
-/// Render the source list screen.
-pub fn render_sources(w: &mut impl Write, menu: &Menu) -> io::Result<()> {
-    render_menu(
-        w,
-        "Boot Sources",
-        "",
-        menu,
-        "↑↓ navigate  Enter select  q quit",
-    )
-}
-
-/// Render the boot tree screen.
-pub fn render_boot_tree(
-    w: &mut impl Write,
-    source_label: &str,
-    menu: &Menu,
-) -> io::Result<()> {
-    render_menu(
-        w,
-        "Boot Tree",
-        source_label,
-        menu,
-        "↑↓ navigate  Enter select  Esc back  f full filesystem",
-    )
-}
-
-/// Render the entry list screen.
-pub fn render_entries(
-    w: &mut impl Write,
-    source_label: &str,
-    leaf_label: &str,
-    menu: &Menu,
-) -> io::Result<()> {
-    let breadcrumb = format!("{source_label} > {leaf_label}");
-    render_menu(
-        w,
-        "Boot Entries",
-        &breadcrumb,
-        menu,
-        "↑↓ navigate  Enter boot  Esc back",
-    )
 }
 
 /// Render the passphrase prompt screen.
@@ -1101,10 +857,6 @@ pub enum Action {
     Redraw,
     /// No change needed.
     None,
-    /// Navigate to source's boot tree.
-    OpenSource(usize),
-    /// Navigate to leaf's entries.
-    OpenLeaf(usize),
     /// Boot the selected entry.
     Boot { source_idx: usize, entry: Entry },
     /// Go back one screen.
@@ -1123,71 +875,6 @@ pub enum Action {
     DirUp,
     /// Boot a file directly from the file browser (kexec a bare kernel).
     BootFile { path: std::path::PathBuf },
-}
-
-/// Handle a key press on a source list screen.
-pub fn handle_source_key(menu: &mut Menu, key: &Key) -> Action {
-    match key {
-        Key::Up => { menu.move_up(); Action::Redraw }
-        Key::Down => { menu.move_down(); Action::Redraw }
-        Key::Enter => {
-            let idx = menu.selected_index();
-            match menu.items.get(idx).map(|i| &i.state) {
-                Some(ItemState::Error(_)) => Action::None,
-                Some(ItemState::Locked) => Action::UnlockSource(idx),
-                _ => Action::OpenSource(idx),
-            }
-        }
-        Key::Char('q') | Key::Char('Q') => Action::Quit,
-        _ => Action::None,
-    }
-}
-
-/// Handle a key press on a boot tree screen.
-pub fn handle_tree_key(menu: &mut Menu, nodes: &[FlatNode], key: &Key) -> Action {
-    match key {
-        Key::Up => { menu.move_up(); Action::Redraw }
-        Key::Down => { menu.move_down(); Action::Redraw }
-        Key::Enter => {
-            let idx = menu.selected_index();
-            if let Some(node) = nodes.get(idx) {
-                match &node.kind {
-                    FlatNodeKind::Leaf { .. } => Action::OpenLeaf(idx),
-                    FlatNodeKind::Dir { .. } => Action::None,
-                }
-            } else {
-                Action::None
-            }
-        }
-        Key::Escape => Action::Back,
-        Key::Char('f') | Key::Char('F') => Action::OpenFileBrowser,
-        _ => Action::None,
-    }
-}
-
-/// Handle a key press on an entry list screen.
-pub fn handle_entry_key(
-    menu: &mut Menu,
-    entries: &[Entry],
-    source_idx: usize,
-    key: &Key,
-) -> Action {
-    match key {
-        Key::Up => { menu.move_up(); Action::Redraw }
-        Key::Down => { menu.move_down(); Action::Redraw }
-        Key::Enter => {
-            if let Some(entry) = entries.get(menu.selected_index()) {
-                Action::Boot {
-                    source_idx,
-                    entry: entry.clone(),
-                }
-            } else {
-                Action::None
-            }
-        }
-        Key::Escape => Action::Back,
-        _ => Action::None,
-    }
 }
 
 // --- Bootable file detection ---
@@ -1430,7 +1117,7 @@ mod tests {
         assert_eq!(m.cursor, 0);
     }
 
-    // --- Flatten tree tests ---
+    // --- Test helpers ---
 
     fn entry(name: &str) -> crate::types::Entry {
         crate::types::Entry {
@@ -1447,146 +1134,6 @@ mod tests {
             entries: names.iter().map(|n| entry(n)).collect(),
             mtime: 100,
         })
-    }
-
-    #[test]
-    fn flatten_simple_tree() {
-        let tree = vec![
-            TreeNode::Dir {
-                name: "nixos".into(),
-                children: vec![
-                    leaf_node("/boot/nixos/gen1", &["default"]),
-                    leaf_node("/boot/nixos/gen2", &["default"]),
-                ],
-            },
-            leaf_node("/boot/other", &["other"]),
-        ];
-        let flat = flatten_tree(&tree, 0);
-        assert_eq!(flat.len(), 4); // dir + 2 leaves + 1 leaf
-        assert_eq!(flat[0].depth, 0);
-        assert_eq!(flat[1].depth, 1);
-        assert_eq!(flat[2].depth, 1);
-        assert_eq!(flat[3].depth, 0);
-    }
-
-    #[test]
-    fn flatten_preserves_names() {
-        let tree = vec![leaf_node("/boot/gen1", &["default"])];
-        let flat = flatten_tree(&tree, 0);
-        match &flat[0].kind {
-            FlatNodeKind::Leaf { name, .. } => assert_eq!(name, "gen1"),
-            _ => panic!("expected leaf"),
-        }
-    }
-
-    // --- Render tests (output sanity) ---
-
-    #[test]
-    fn render_sources_produces_output() {
-        let mut buf = Vec::new();
-        let menu = test_menu(2);
-        render_sources(&mut buf, &menu).unwrap();
-        let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("kexec-menu"));
-        assert!(output.contains("Boot Sources"));
-        assert!(output.contains("item0"));
-        assert!(output.contains("item1"));
-    }
-
-    // --- Action handling tests ---
-
-    #[test]
-    fn source_key_enter_opens() {
-        let mut menu = test_menu(2);
-        let action = handle_source_key(&mut menu, &Key::Enter);
-        assert!(matches!(action, Action::OpenSource(0)));
-    }
-
-    #[test]
-    fn source_key_enter_locked_unlocks() {
-        let items = vec![MenuItem {
-            label: "locked".into(),
-            detail: String::new(),
-            state: ItemState::Locked,
-        }];
-        let mut menu = Menu::new(items, None);
-        let action = handle_source_key(&mut menu, &Key::Enter);
-        assert!(matches!(action, Action::UnlockSource(0)));
-    }
-
-    #[test]
-    fn source_key_q_quits() {
-        let mut menu = test_menu(1);
-        let action = handle_source_key(&mut menu, &Key::Char('q'));
-        assert!(matches!(action, Action::Quit));
-    }
-
-    #[test]
-    fn tree_key_enter_on_dir_noop() {
-        let nodes = vec![FlatNode {
-            depth: 0,
-            kind: FlatNodeKind::Dir { name: "nixos".into() },
-        }];
-        let items = vec![MenuItem {
-            label: "nixos/".into(),
-            detail: String::new(),
-            state: ItemState::Normal,
-        }];
-        let mut menu = Menu::new(items, None);
-        let action = handle_tree_key(&mut menu, &nodes, &Key::Enter);
-        assert!(matches!(action, Action::None));
-    }
-
-    #[test]
-    fn tree_key_enter_on_leaf_opens() {
-        let nodes = vec![FlatNode {
-            depth: 0,
-            kind: FlatNodeKind::Leaf {
-                name: "gen1".into(),
-                entry_count: 1,
-                path: PathBuf::from("/boot/gen1"),
-            },
-        }];
-        let items = vec![MenuItem {
-            label: "gen1".into(),
-            detail: "1 entries".into(),
-            state: ItemState::Normal,
-        }];
-        let mut menu = Menu::new(items, None);
-        let action = handle_tree_key(&mut menu, &nodes, &Key::Enter);
-        assert!(matches!(action, Action::OpenLeaf(0)));
-    }
-
-    #[test]
-    fn entry_key_enter_boots() {
-        let entries = vec![entry("default")];
-        let items = vec![MenuItem {
-            label: "default".into(),
-            detail: String::new(),
-            state: ItemState::Normal,
-        }];
-        let mut menu = Menu::new(items, None);
-        let action = handle_entry_key(&mut menu, &entries, 0, &Key::Enter);
-        match action {
-            Action::Boot { source_idx, entry: e } => {
-                assert_eq!(source_idx, 0);
-                assert_eq!(e.name, "default");
-            }
-            _ => panic!("expected Boot action"),
-        }
-    }
-
-    #[test]
-    fn entry_key_escape_goes_back() {
-        let entries = vec![entry("default")];
-        let items = vec![MenuItem {
-            label: "default".into(),
-            detail: String::new(),
-            state: ItemState::Normal,
-        }];
-        let mut menu = Menu::new(items, None);
-        let action = handle_entry_key(&mut menu, &entries, 0, &Key::Escape);
-        assert!(matches!(action, Action::Back));
     }
 
     // --- Backspace key parsing ---
@@ -1903,26 +1450,6 @@ mod tests {
         let txt = entries.iter().find(|e| e.name == "readme.txt").unwrap();
         assert!(efi.is_bootable);
         assert!(!txt.is_bootable);
-    }
-
-    #[test]
-    fn tree_key_f_opens_file_browser() {
-        let nodes = vec![FlatNode {
-            depth: 0,
-            kind: FlatNodeKind::Leaf {
-                name: "gen1".into(),
-                entry_count: 1,
-                path: PathBuf::from("/boot/gen1"),
-            },
-        }];
-        let items = vec![MenuItem {
-            label: "gen1".into(),
-            detail: "1 entries".into(),
-            state: ItemState::Normal,
-        }];
-        let mut menu = Menu::new(items, None);
-        let action = handle_tree_key(&mut menu, &nodes, &Key::Char('f'));
-        assert!(matches!(action, Action::OpenFileBrowser));
     }
 
     // --- Arrow key parsing tests ---
