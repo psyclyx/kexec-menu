@@ -1474,6 +1474,7 @@ mod tests {
             device: PathBuf::from("/dev/nvme0n1p2"),
             state: SourceState::Mounted,
             mount_point: Some(PathBuf::from("/mnt/boot")),
+            passphrase: None,
         }]
     }
 
@@ -1710,6 +1711,7 @@ mod tests {
             device: PathBuf::from("/dev/sda1"),
             state: SourceState::Encrypted,
             mount_point: None,
+            passphrase: None,
         }];
         let trees = vec![("sda1".into(), Vec::new())];
         let view = TreeView::build(&sources, &trees, None);
@@ -1733,12 +1735,14 @@ mod tests {
                 device: PathBuf::from("/dev/nvme0n1p2"),
                 state: SourceState::Mounted,
                 mount_point: Some(PathBuf::from("/mnt/a")),
+                passphrase: None,
             },
             Source {
                 label: "sda1".into(),
                 device: PathBuf::from("/dev/sda1"),
                 state: SourceState::Mounted,
                 mount_point: Some(PathBuf::from("/mnt/b")),
+                passphrase: None,
             },
         ];
         let trees = vec![
@@ -1791,6 +1795,7 @@ mod tests {
             device: PathBuf::from("/dev/sdc1"),
             state: SourceState::Mounted,
             mount_point: Some(PathBuf::from("/mnt/empty")),
+            passphrase: None,
         }];
         let trees = vec![("empty-disk".into(), Vec::new())];
         let view = TreeView::build(&sources, &trees, None);
@@ -1862,6 +1867,7 @@ mod tests {
             device: PathBuf::from("/dev/sda1"),
             state: SourceState::Encrypted,
             mount_point: None,
+            passphrase: None,
         }];
         let trees = vec![("sda1".into(), Vec::new())];
         let view = TreeView::build(&sources, &trees, None);
@@ -1929,6 +1935,7 @@ mod tests {
             device: PathBuf::from("/dev/sda1"),
             state: SourceState::Encrypted,
             mount_point: None,
+            passphrase: None,
         }];
         let trees = vec![("sda1".into(), Vec::new())];
         let mut view = TreeView::build(&sources, &trees, None);

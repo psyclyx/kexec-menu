@@ -327,6 +327,7 @@ pub fn load_static_entries(path: &Path) -> Result<Vec<(Source, String, Vec<TreeN
             device: dir_path,
             state: SourceState::Static,
             mount_point: None,
+            passphrase: None,
         };
         result.push((source, cfg.name, tree));
     }

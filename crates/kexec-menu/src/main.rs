@@ -72,7 +72,8 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
             eprintln!("kexec-menu: user quit");
             Ok(())
         }
-        Ok(TuiResult::Boot { leaf_path, entry }) => {
+        Ok(TuiResult::Boot { leaf_path, entry, source_idx }) => {
+            let key_data = source_key_data(&sources, source_idx);
             if dry_run {
                 eprintln!("kexec-menu: would boot:");
                 eprintln!("  leaf:    {}", leaf_path.display());
@@ -80,6 +81,9 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
                 eprintln!("  initrd:  {}", entry.initrd);
                 eprintln!("  cmdline: {}", entry.cmdline);
                 eprintln!("  entry:   {}", entry.name);
+                if key_data.is_some() {
+                    eprintln!("  key:     (handoff enabled)");
+                }
                 Ok(())
             } else {
                 kexec::boot_entry(
@@ -88,7 +92,7 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
                     &entry.initrd,
                     &entry.cmdline,
                     &entry.name,
-                    None,
+                    key_data.as_ref().map(|(pw, uuid)| (pw.as_bytes(), uuid.as_str())),
                 )
                 .map_err(boxed)?;
                 Ok(())
@@ -148,11 +152,21 @@ fn boxed(e: impl std::fmt::Display + 'static) -> Box<dyn std::fmt::Display> {
     Box::new(e)
 }
 
+/// Extract passphrase and device UUID for key handoff, if the source was unlocked.
+fn source_key_data(sources: &[Source], idx: usize) -> Option<(String, String)> {
+    let src = sources.get(idx)?;
+    let pw = src.passphrase.as_ref()?;
+    let dev_name = src.device.file_name()?.to_str()?;
+    let uuid = mount::read_device_uuid(dev_name)?;
+    Some((pw.clone(), uuid))
+}
+
 enum TuiResult {
     Quit,
     Boot {
         leaf_path: PathBuf,
         entry: kexec_menu_core::types::Entry,
+        source_idx: usize,
     },
     BootFile {
         path: PathBuf,
@@ -212,11 +226,10 @@ fn run_tui(
                         cleanup(&mut output)?;
                         return Ok(TuiResult::Quit);
                     }
-                    tui::Action::Boot { entry, .. } => {
-                        // Find the leaf path from the entry's position in the tree
+                    tui::Action::Boot { source_idx, entry } => {
                         let leaf_path = find_entry_leaf_path(&view);
                         cleanup(&mut output)?;
-                        return Ok(TuiResult::Boot { leaf_path, entry });
+                        return Ok(TuiResult::Boot { leaf_path, entry, source_idx });
                     }
                     tui::Action::UnlockSource(idx) => {
                         let label = sources.get(idx)
@@ -260,6 +273,7 @@ fn run_tui(
                             Ok(mp) => {
                                 sources[si].state = SourceState::Mounted;
                                 sources[si].mount_point = Some(mp);
+                                sources[si].passphrase = Some(passphrase);
                                 let mut new_trees = Vec::new();
                                 build_source_tree(&sources[si], &mut new_trees);
                                 if let Some(t) = new_trees.into_iter().next() {

@@ -30,6 +30,8 @@ pub struct Source {
     pub device: PathBuf,
     pub state: SourceState,
     pub mount_point: Option<PathBuf>,
+    /// Passphrase used to unlock an encrypted source, retained for key handoff.
+    pub passphrase: Option<String>,
 }
 
 pub enum SourceState {

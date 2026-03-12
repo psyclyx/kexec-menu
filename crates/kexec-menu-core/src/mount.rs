@@ -361,6 +361,7 @@ pub fn discover_sources() -> Result<Vec<Source>> {
                     device: dev.path.clone(),
                     state: SourceState::Encrypted,
                     mount_point: None,
+                    passphrase: None,
                 });
             }
             FsType::Ext4 | FsType::Btrfs | FsType::Bcachefs => {
@@ -371,6 +372,7 @@ pub fn discover_sources() -> Result<Vec<Source>> {
                             device: dev.path.clone(),
                             state: SourceState::Mounted,
                             mount_point: Some(mp),
+                            passphrase: None,
                         });
                     }
                     Err(Error::Io(ref e))
@@ -382,6 +384,7 @@ pub fn discover_sources() -> Result<Vec<Source>> {
                             device: dev.path.clone(),
                             state: SourceState::Encrypted,
                             mount_point: None,
+                            passphrase: None,
                         });
                     }
                     Err(e) => {
@@ -390,6 +393,7 @@ pub fn discover_sources() -> Result<Vec<Source>> {
                             device: dev.path.clone(),
                             state: SourceState::Error(format!("{e}")),
                             mount_point: None,
+                            passphrase: None,
                         });
                     }
                 }
