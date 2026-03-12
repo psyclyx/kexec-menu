@@ -63,6 +63,17 @@ let
       # Touch mtime so the bootmenu picks this as most recent
       touch "$leaf_dir"
 
+      # Prune old generations beyond retention count
+      mapfile -t leaves < <(
+        find "$boot_dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@\t%p\n' \
+          | sort -rn | cut -f2
+      )
+      if [ "''${#leaves[@]}" -gt ${toString cfg.retention} ]; then
+        for leaf in "''${leaves[@]:${toString cfg.retention}}"; do
+          rm -rf "$leaf"
+        done
+      fi
+
       # Optionally install UKI
       ${lib.optionalString (cfg.ukiInstallPath != null) ''
         mkdir -p "$(dirname "${cfg.ukiInstallPath}")"
