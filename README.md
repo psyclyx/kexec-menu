@@ -23,7 +23,7 @@ Without Nix (requires Rust toolchain + musl targets):
 
 ## Testing
 
-    cargo test                 # unit tests (109 tests)
+    cargo test                 # unit tests (135 tests)
     make test                  # unit tests via Makefile
 
 QEMU integration test (requires nix-shell):
