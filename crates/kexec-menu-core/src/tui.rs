@@ -13,6 +13,8 @@ use crate::types::{BootSelection, Entry, Source, SourceState, TreeNode};
 pub enum Key {
     Up,
     Down,
+    Left,
+    Right,
     Enter,
     Escape,
     Backspace,
@@ -34,6 +36,8 @@ pub fn read_key(input: &mut impl Read) -> io::Result<Key> {
                 match seq[1] {
                     b'A' => Ok(Key::Up),
                     b'B' => Ok(Key::Down),
+                    b'C' => Ok(Key::Right),
+                    b'D' => Ok(Key::Left),
                     _ => Ok(Key::Unknown),
                 }
             } else {
@@ -132,6 +136,368 @@ impl Menu {
 
     pub fn selected_index(&self) -> usize {
         self.cursor
+    }
+}
+
+// --- Unified tree view ---
+
+/// A node in the unified tree view.
+#[derive(Debug, Clone)]
+pub struct TreeViewNode {
+    pub depth: usize,
+    pub kind: NodeKind,
+    pub expanded: bool,
+    pub visible: bool,
+    pub is_default: bool,
+}
+
+/// The kind of a tree view node.
+#[derive(Debug, Clone)]
+pub enum NodeKind {
+    Source {
+        idx: usize,
+        label: String,
+        state: NodeSourceState,
+    },
+    Dir {
+        name: String,
+    },
+    Leaf {
+        name: String,
+        path: std::path::PathBuf,
+        entry_count: usize,
+    },
+    Entry {
+        entry: Entry,
+        source_idx: usize,
+    },
+}
+
+/// Source state as visible to the tree view (avoids borrowing SourceState).
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeSourceState {
+    Mounted,
+    Encrypted,
+    Error(String),
+    Static,
+    Empty,
+}
+
+/// The unified tree view: one navigable tree of all sources + boot entries.
+pub struct TreeView {
+    pub nodes: Vec<TreeViewNode>,
+    pub cursor: usize,
+}
+
+impl TreeView {
+    /// Build a tree view from sources, their parsed trees, and the default selection.
+    pub fn build(
+        sources: &[Source],
+        trees: &[(String, Vec<TreeNode>)],
+        default: Option<&BootSelection>,
+    ) -> Self {
+        let mut nodes = Vec::new();
+        let mut default_entry_idx = None;
+
+        // Determine which source/path should be expanded to show the default
+        let default_source_idx = default.and_then(|sel| {
+            trees.iter().enumerate().find_map(|(i, (_, tree))| {
+                if tree_contains_path(tree, &sel.leaf_path) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+        });
+
+        for (i, src) in sources.iter().enumerate() {
+            let state = match &src.state {
+                SourceState::Mounted | SourceState::Static => {
+                    if trees.get(i).map(|(_, t)| t.is_empty()).unwrap_or(true) {
+                        NodeSourceState::Empty
+                    } else {
+                        match &src.state {
+                            SourceState::Static => NodeSourceState::Static,
+                            _ => NodeSourceState::Mounted,
+                        }
+                    }
+                }
+                SourceState::Encrypted => NodeSourceState::Encrypted,
+                SourceState::Error(e) => NodeSourceState::Error(e.clone()),
+            };
+
+            let has_default = default_source_idx == Some(i);
+            let expandable = matches!(state, NodeSourceState::Mounted | NodeSourceState::Static);
+
+            nodes.push(TreeViewNode {
+                depth: 0,
+                kind: NodeKind::Source {
+                    idx: i,
+                    label: src.label.clone(),
+                    state,
+                },
+                expanded: expandable && has_default,
+                visible: true,
+                is_default: false,
+            });
+
+            // Add tree children if source is mounted/static
+            if expandable {
+                if let Some((_, tree)) = trees.get(i) {
+                    Self::add_tree_nodes(
+                        &mut nodes,
+                        tree,
+                        1, // depth
+                        i, // source_idx
+                        default,
+                        &mut default_entry_idx,
+                    );
+                }
+            }
+        }
+
+        // Recompute visibility based on expansion state
+        let mut view = TreeView { nodes, cursor: 0 };
+        view.recompute_visibility();
+
+        // Set cursor to default entry, or first visible node
+        if let Some(idx) = default_entry_idx {
+            if view.nodes.get(idx).map(|n| n.visible).unwrap_or(false) {
+                view.cursor = idx;
+            }
+        }
+
+        view
+    }
+
+    fn add_tree_nodes(
+        nodes: &mut Vec<TreeViewNode>,
+        tree: &[TreeNode],
+        depth: usize,
+        source_idx: usize,
+        default: Option<&BootSelection>,
+        default_entry_idx: &mut Option<usize>,
+    ) {
+        for tree_node in tree {
+            match tree_node {
+                TreeNode::Dir { name, children } => {
+                    let path_has_default = default
+                        .map(|sel| tree_contains_path(children, &sel.leaf_path))
+                        .unwrap_or(false);
+
+                    nodes.push(TreeViewNode {
+                        depth,
+                        kind: NodeKind::Dir { name: name.clone() },
+                        expanded: path_has_default,
+                        visible: false, // recomputed later
+                        is_default: false,
+                    });
+                    Self::add_tree_nodes(
+                        nodes,
+                        children,
+                        depth + 1,
+                        source_idx,
+                        default,
+                        default_entry_idx,
+                    );
+                }
+                TreeNode::Leaf(leaf) => {
+                    let leaf_name = leaf
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| leaf.path.to_string_lossy().into_owned());
+
+                    let is_default_leaf = default
+                        .map(|sel| sel.leaf_path == leaf.path)
+                        .unwrap_or(false);
+
+                    nodes.push(TreeViewNode {
+                        depth,
+                        kind: NodeKind::Leaf {
+                            name: leaf_name,
+                            path: leaf.path.clone(),
+                            entry_count: leaf.entries.len(),
+                        },
+                        expanded: is_default_leaf,
+                        visible: false,
+                        is_default: false,
+                    });
+
+                    // Add entries under this leaf
+                    for entry in &leaf.entries {
+                        let is_default_entry = default
+                            .map(|sel| {
+                                sel.leaf_path == leaf.path && sel.entry_name == entry.name
+                            })
+                            .unwrap_or(false);
+
+                        let entry_idx = nodes.len();
+                        if is_default_entry {
+                            *default_entry_idx = Some(entry_idx);
+                        }
+
+                        nodes.push(TreeViewNode {
+                            depth: depth + 1,
+                            kind: NodeKind::Entry {
+                                entry: entry.clone(),
+                                source_idx,
+                            },
+                            expanded: false,
+                            visible: false,
+                            is_default: is_default_entry,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Recompute visibility of all nodes based on ancestor expansion state.
+    pub fn recompute_visibility(&mut self) {
+        // A node is visible iff all ancestors are expanded.
+        // Walk the list tracking a "hidden below depth" threshold.
+        let mut hidden_below: Option<usize> = None;
+
+        for node in self.nodes.iter_mut() {
+            if let Some(threshold) = hidden_below {
+                if node.depth <= threshold {
+                    // We've exited the collapsed subtree
+                    hidden_below = None;
+                }
+            }
+
+            if hidden_below.is_some() {
+                node.visible = false;
+            } else {
+                node.visible = true;
+                if !node.expanded && !matches!(node.kind, NodeKind::Entry { .. }) {
+                    // This node is collapsed — hide everything deeper
+                    hidden_below = Some(node.depth);
+                }
+            }
+        }
+    }
+
+    /// Move cursor to the next visible node.
+    pub fn move_down(&mut self) {
+        let start = self.cursor + 1;
+        for i in start..self.nodes.len() {
+            if self.nodes[i].visible {
+                self.cursor = i;
+                return;
+            }
+        }
+    }
+
+    /// Move cursor to the previous visible node.
+    pub fn move_up(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        for i in (0..self.cursor).rev() {
+            if self.nodes[i].visible {
+                self.cursor = i;
+                return;
+            }
+        }
+    }
+
+    /// Toggle expand/collapse of the node at the cursor.
+    /// Returns true if state changed.
+    pub fn toggle(&mut self) -> bool {
+        if let Some(node) = self.nodes.get_mut(self.cursor) {
+            match &node.kind {
+                NodeKind::Entry { .. } => return false, // entries don't toggle
+                NodeKind::Source { state, .. } => {
+                    match state {
+                        NodeSourceState::Encrypted
+                        | NodeSourceState::Error(_)
+                        | NodeSourceState::Empty => return false,
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+            node.expanded = !node.expanded;
+            self.recompute_visibility();
+            // If cursor is now on an invisible node (shouldn't happen for toggle),
+            // move to parent
+            self.ensure_cursor_visible();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Expand the node at the cursor. Returns true if state changed.
+    pub fn expand(&mut self) -> bool {
+        if let Some(node) = self.nodes.get(self.cursor) {
+            if matches!(node.kind, NodeKind::Entry { .. }) {
+                return false;
+            }
+            if node.expanded {
+                return false;
+            }
+        }
+        self.toggle()
+    }
+
+    /// Collapse the node at the cursor, or move to parent if already collapsed/entry.
+    pub fn collapse(&mut self) -> bool {
+        if let Some(node) = self.nodes.get(self.cursor) {
+            if !matches!(node.kind, NodeKind::Entry { .. }) && node.expanded {
+                return self.toggle();
+            }
+            // Move to parent: find nearest visible ancestor with lower depth
+            let depth = node.depth;
+            if depth == 0 {
+                return false;
+            }
+            for i in (0..self.cursor).rev() {
+                if self.nodes[i].visible && self.nodes[i].depth < depth {
+                    self.cursor = i;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Ensure cursor is on a visible node. If not, move to the nearest visible ancestor.
+    fn ensure_cursor_visible(&mut self) {
+        if self.nodes.get(self.cursor).map(|n| n.visible).unwrap_or(false) {
+            return;
+        }
+        // Move cursor up to nearest visible node
+        for i in (0..self.cursor).rev() {
+            if self.nodes[i].visible {
+                self.cursor = i;
+                return;
+            }
+        }
+        self.cursor = 0;
+    }
+
+    /// Get the node at the cursor.
+    pub fn selected(&self) -> Option<&TreeViewNode> {
+        self.nodes.get(self.cursor)
+    }
+
+    /// Count visible nodes.
+    pub fn visible_count(&self) -> usize {
+        self.nodes.iter().filter(|n| n.visible).count()
+    }
+
+    /// Find the source index for the node at the cursor.
+    pub fn cursor_source_idx(&self) -> Option<usize> {
+        // Walk backward to find the source ancestor
+        for i in (0..=self.cursor).rev() {
+            if let NodeKind::Source { idx, .. } = &self.nodes[i].kind {
+                return Some(*idx);
+            }
+        }
+        None
     }
 }
 
@@ -1380,5 +1746,370 @@ mod tests {
         let mut menu = Menu::new(items, None);
         let action = handle_tree_key(&mut menu, &nodes, &Key::Char('f'));
         assert!(matches!(action, Action::OpenFileBrowser));
+    }
+
+    // --- Arrow key parsing tests ---
+
+    #[test]
+    fn parse_arrow_left() {
+        let mut input: &[u8] = b"\x1b[D";
+        assert_eq!(read_key(&mut input).unwrap(), Key::Left);
+    }
+
+    #[test]
+    fn parse_arrow_right() {
+        let mut input: &[u8] = b"\x1b[C";
+        assert_eq!(read_key(&mut input).unwrap(), Key::Right);
+    }
+
+    // --- TreeView tests ---
+
+    fn test_sources() -> Vec<Source> {
+        vec![Source {
+            label: "nvme0n1p2 (bcachefs)".into(),
+            device: PathBuf::from("/dev/nvme0n1p2"),
+            state: SourceState::Mounted,
+            mount_point: Some(PathBuf::from("/mnt/boot")),
+        }]
+    }
+
+    fn test_tree() -> Vec<(String, Vec<TreeNode>)> {
+        vec![("nvme0n1p2".into(), vec![
+            TreeNode::Dir {
+                name: "nixos".into(),
+                children: vec![
+                    leaf_node("/boot/nixos/gen2", &["NixOS default", "NixOS fallback"]),
+                    leaf_node("/boot/nixos/gen1", &["NixOS default"]),
+                ],
+            },
+        ])]
+    }
+
+    fn test_default() -> BootSelection {
+        BootSelection {
+            leaf_path: PathBuf::from("/boot/nixos/gen2"),
+            entry_name: "NixOS default".into(),
+        }
+    }
+
+    #[test]
+    fn tree_view_build_basic() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Source + Dir(nixos) + Leaf(gen2) + 2 entries + Leaf(gen1) + 1 entry = 7
+        assert_eq!(view.nodes.len(), 7);
+        assert!(matches!(view.nodes[0].kind, NodeKind::Source { .. }));
+        assert!(matches!(view.nodes[1].kind, NodeKind::Dir { .. }));
+        assert!(matches!(view.nodes[2].kind, NodeKind::Leaf { .. }));
+        assert!(matches!(view.nodes[3].kind, NodeKind::Entry { .. }));
+        assert!(matches!(view.nodes[4].kind, NodeKind::Entry { .. }));
+        assert!(matches!(view.nodes[5].kind, NodeKind::Leaf { .. }));
+        assert!(matches!(view.nodes[6].kind, NodeKind::Entry { .. }));
+    }
+
+    #[test]
+    fn tree_view_default_expanded() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Source expanded (contains default)
+        assert!(view.nodes[0].expanded);
+        // Dir "nixos" expanded (contains default leaf)
+        assert!(view.nodes[1].expanded);
+        // Leaf gen2 expanded (is default leaf)
+        assert!(view.nodes[2].expanded);
+        // Leaf gen1 collapsed (not default)
+        assert!(!view.nodes[5].expanded);
+    }
+
+    #[test]
+    fn tree_view_cursor_on_default_entry() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Cursor should be on the default entry (index 3: "NixOS default" under gen2)
+        assert_eq!(view.cursor, 3);
+        assert!(view.nodes[3].is_default);
+    }
+
+    #[test]
+    fn tree_view_visibility() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Source, Dir, Leaf(gen2), Entry, Entry all visible (default path expanded)
+        assert!(view.nodes[0].visible); // source
+        assert!(view.nodes[1].visible); // nixos/
+        assert!(view.nodes[2].visible); // gen2
+        assert!(view.nodes[3].visible); // entry default
+        assert!(view.nodes[4].visible); // entry fallback
+        // gen1 visible (sibling of gen2, parent is expanded)
+        assert!(view.nodes[5].visible);
+        // gen1's entry hidden (gen1 is collapsed)
+        assert!(!view.nodes[6].visible);
+    }
+
+    #[test]
+    fn tree_view_move_down_skips_invisible() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Cursor at index 3 (default entry)
+        assert_eq!(view.cursor, 3);
+        view.move_down(); // -> index 4 (fallback entry)
+        assert_eq!(view.cursor, 4);
+        view.move_down(); // -> index 5 (gen1, visible), skipping nothing
+        assert_eq!(view.cursor, 5);
+        view.move_down(); // -> should NOT move (gen1's entry is invisible, nothing after)
+        assert_eq!(view.cursor, 5);
+    }
+
+    #[test]
+    fn tree_view_move_up() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Start at cursor 3
+        view.move_up(); // -> 2 (gen2 leaf)
+        assert_eq!(view.cursor, 2);
+        view.move_up(); // -> 1 (nixos dir)
+        assert_eq!(view.cursor, 1);
+        view.move_up(); // -> 0 (source)
+        assert_eq!(view.cursor, 0);
+        view.move_up(); // stays at 0
+        assert_eq!(view.cursor, 0);
+    }
+
+    #[test]
+    fn tree_view_toggle_collapse() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Move cursor to nixos dir (index 1), collapse it
+        view.cursor = 1;
+        assert!(view.nodes[1].expanded);
+        let changed = view.toggle();
+        assert!(changed);
+        assert!(!view.nodes[1].expanded);
+
+        // Children should now be invisible
+        assert!(!view.nodes[2].visible); // gen2
+        assert!(!view.nodes[3].visible); // entry
+        assert!(!view.nodes[4].visible); // entry
+        assert!(!view.nodes[5].visible); // gen1
+        assert!(!view.nodes[6].visible); // entry
+    }
+
+    #[test]
+    fn tree_view_toggle_expand() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // gen1 is collapsed, move cursor there and expand
+        view.cursor = 5;
+        assert!(!view.nodes[5].expanded);
+        view.toggle();
+        assert!(view.nodes[5].expanded);
+        // gen1's entry should now be visible
+        assert!(view.nodes[6].visible);
+    }
+
+    #[test]
+    fn tree_view_collapse_moves_cursor_to_parent() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Cursor on default entry (3), collapse should go to parent leaf (2)
+        assert_eq!(view.cursor, 3);
+        let changed = view.collapse();
+        assert!(changed);
+        assert_eq!(view.cursor, 2);
+    }
+
+    #[test]
+    fn tree_view_collapse_already_collapsed_goes_to_parent() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // gen1 is collapsed, cursor there, collapse should go to parent dir
+        view.cursor = 5;
+        assert!(!view.nodes[5].expanded);
+        let changed = view.collapse();
+        assert!(changed);
+        assert_eq!(view.cursor, 1); // nixos dir
+    }
+
+    #[test]
+    fn tree_view_expand_already_expanded_noop() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        view.cursor = 1; // nixos dir, already expanded
+        let changed = view.expand();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn tree_view_toggle_entry_noop() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Entries can't be toggled
+        view.cursor = 3;
+        let changed = view.toggle();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn tree_view_no_default() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let view = TreeView::build(&sources, &trees, None);
+
+        // Without default, source should be collapsed
+        assert!(!view.nodes[0].expanded);
+        // Cursor at 0
+        assert_eq!(view.cursor, 0);
+        // Only source visible
+        assert_eq!(view.visible_count(), 1);
+    }
+
+    #[test]
+    fn tree_view_encrypted_source() {
+        let sources = vec![Source {
+            label: "sda1 (luks)".into(),
+            device: PathBuf::from("/dev/sda1"),
+            state: SourceState::Encrypted,
+            mount_point: None,
+        }];
+        let trees = vec![("sda1".into(), Vec::new())];
+        let view = TreeView::build(&sources, &trees, None);
+
+        assert_eq!(view.nodes.len(), 1);
+        assert!(matches!(
+            &view.nodes[0].kind,
+            NodeKind::Source { state: NodeSourceState::Encrypted, .. }
+        ));
+        // Can't toggle encrypted source
+        let mut view = view;
+        let changed = view.toggle();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn tree_view_multiple_sources() {
+        let sources = vec![
+            Source {
+                label: "nvme0n1p2".into(),
+                device: PathBuf::from("/dev/nvme0n1p2"),
+                state: SourceState::Mounted,
+                mount_point: Some(PathBuf::from("/mnt/a")),
+            },
+            Source {
+                label: "sda1".into(),
+                device: PathBuf::from("/dev/sda1"),
+                state: SourceState::Mounted,
+                mount_point: Some(PathBuf::from("/mnt/b")),
+            },
+        ];
+        let trees = vec![
+            ("nvme0n1p2".into(), vec![leaf_node("/boot/a/gen1", &["entry1"])]),
+            ("sda1".into(), vec![leaf_node("/boot/b/gen1", &["entry2"])]),
+        ];
+        let default = BootSelection {
+            leaf_path: PathBuf::from("/boot/b/gen1"),
+            entry_name: "entry2".into(),
+        };
+        let view = TreeView::build(&sources, &trees, Some(&default));
+
+        // First source collapsed, second expanded
+        assert!(!view.nodes[0].expanded);
+        // Find second source
+        let src2_idx = view.nodes.iter().position(|n| {
+            matches!(&n.kind, NodeKind::Source { idx: 1, .. })
+        }).unwrap();
+        assert!(view.nodes[src2_idx].expanded);
+    }
+
+    #[test]
+    fn tree_view_cursor_source_idx() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Cursor on entry under source 0
+        assert_eq!(view.cursor_source_idx(), Some(0));
+    }
+
+    #[test]
+    fn tree_view_collapse_source_hides_all() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Collapse the source
+        view.cursor = 0;
+        view.toggle();
+        assert_eq!(view.visible_count(), 1); // only the source itself
+    }
+
+    #[test]
+    fn tree_view_empty_source_not_expandable() {
+        let sources = vec![Source {
+            label: "empty-disk".into(),
+            device: PathBuf::from("/dev/sdc1"),
+            state: SourceState::Mounted,
+            mount_point: Some(PathBuf::from("/mnt/empty")),
+        }];
+        let trees = vec![("empty-disk".into(), Vec::new())];
+        let view = TreeView::build(&sources, &trees, None);
+
+        assert_eq!(view.nodes.len(), 1);
+        assert!(matches!(
+            &view.nodes[0].kind,
+            NodeKind::Source { state: NodeSourceState::Empty, .. }
+        ));
+        let mut view = view;
+        let changed = view.toggle();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn tree_view_left_at_top_level_noop() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let mut view = TreeView::build(&sources, &trees, None);
+
+        // Source at depth 0, collapsed — left should do nothing
+        view.cursor = 0;
+        let changed = view.collapse();
+        assert!(!changed);
     }
 }
