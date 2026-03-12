@@ -16,13 +16,12 @@ With Nix:
 
 Without Nix:
 
-    make        # requires Rust toolchain + musl targets
+    cargo build --release      # requires Rust toolchain + musl targets
 
 ## Testing
 
-    make test                  # unit tests
-    make qemu-test             # QEMU integration tests (requires QEMU)
-    nix-build -A checks        # both, via Nix
+    cargo test                 # unit tests
+    nix-build -A checks        # unit + integration tests, via Nix
 
 ## Spec
 
