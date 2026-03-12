@@ -1,0 +1,1 @@
+// Default entry selection algorithm.
