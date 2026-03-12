@@ -80,7 +80,7 @@ something else is needed.
 
 ## Default Selection
 
-EFI var (project GUID TBD) stores `(leaf_path, entry_name)`, written at kexec time.
+EFI var (`e518894a-0634-4b2d-b448-e654c0eda6a7`) stores `(leaf_path, entry_name)`, written at kexec time.
 
 1. Load `(leaf_path, entry_name)` from EFI var. If absent, go to 4.
 2. Find most recently modified sibling of `leaf_path` (mtime).

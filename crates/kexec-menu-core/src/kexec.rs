@@ -21,9 +21,8 @@ use crate::types::{BootSelection, Error, Result};
 // This is a simple text format, easy to parse and debug.
 
 const EFI_VAR_NAME: &str = "KexecMenuSelection";
-// Project GUID — assigned for kexec-menu EFI variables.
-// TODO: finalize GUID before release
-const EFI_VAR_GUID: &str = "7c436110-ab2a-4bbb-b3b0-7b70e91f5571";
+// Project GUID for kexec-menu EFI variables.
+const EFI_VAR_GUID: &str = "e518894a-0634-4b2d-b448-e654c0eda6a7";
 
 /// EFI variable attributes: non-volatile + boot service access + runtime access.
 const EFI_ATTR_NV_BS_RT: u32 = 0x07;
