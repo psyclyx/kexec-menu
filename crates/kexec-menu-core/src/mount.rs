@@ -53,7 +53,8 @@ const EXT_MAGIC: [u8; 2] = [0x53, 0xEF]; // little-endian 0xEF53
 const BTRFS_MAGIC_OFFSET: u64 = 0x10040;
 const BTRFS_MAGIC: &[u8] = b"_BHRfS_M";
 
-const BCACHEFS_SUPER_OFFSET: u64 = 0x1008;
+const BCACHEFS_SB_START: u64 = 0x1000; // sector 8
+const BCACHEFS_SUPER_OFFSET: u64 = BCACHEFS_SB_START + 0x18; // magic field
 const BCACHEFS_MAGIC: [u8; 4] = [0xf6, 0x73, 0x85, 0xc6]; // little-endian 0xc68573f6
 
 const LUKS_MAGIC: &[u8] = b"LUKS\xba\xbe";
@@ -120,8 +121,8 @@ fn read_btrfs_label(f: &mut fs::File) -> Result<Option<String>> {
 }
 
 fn read_bcachefs_label(f: &mut fs::File) -> Result<Option<String>> {
-    // bcachefs label: 32 bytes at superblock offset 0x1010
-    f.seek(SeekFrom::Start(0x1010))?;
+    // bcachefs label: 32 bytes at sb_start + 0x48
+    f.seek(SeekFrom::Start(BCACHEFS_SB_START + 0x48))?;
     let mut buf = [0u8; 32];
     f.read_exact(&mut buf)?;
     Ok(label_from_bytes(&buf))
@@ -358,6 +359,14 @@ pub fn discover_sources() -> Result<Vec<Source>> {
                     mount_point: None,
                 });
             }
+            FsType::Bcachefs if bcachefs_is_encrypted(&dev.path).unwrap_or(false) => {
+                sources.push(Source {
+                    label,
+                    device: dev.path.clone(),
+                    state: SourceState::Encrypted,
+                    mount_point: None,
+                });
+            }
             FsType::Ext4 | FsType::Btrfs | FsType::Bcachefs => {
                 match mount_ro(&dev.path, fstype) {
                     Ok(mp) => {
@@ -387,14 +396,17 @@ pub fn discover_sources() -> Result<Vec<Source>> {
 // --- Bcachefs encryption detection ---
 
 /// Check if a bcachefs filesystem is encrypted by probing the superblock.
-/// Returns true if the filesystem uses encryption.
+/// BCH_SB_ENCRYPTION_TYPE is bits 10-14 of flags[1]; nonzero means encrypted.
 pub fn bcachefs_is_encrypted(dev: &Path) -> Result<bool> {
-    // bcachefs superblock flags field at offset 0x1000 + 0x40 (64 bytes into sb)
-    // For now, attempt mount — if it fails with EACCES or similar, it's encrypted.
-    // A proper implementation would parse the superblock flags.
-    // TODO: parse bcachefs superblock flags for encryption bit
-    let _ = dev;
-    Ok(false)
+    let mut f = fs::File::open(dev)?;
+    // flags[1] is at sb_start + 0x98
+    f.seek(SeekFrom::Start(BCACHEFS_SB_START + 0x98))?;
+    let mut buf = [0u8; 8];
+    f.read_exact(&mut buf)?;
+    let flags1 = u64::from_le_bytes(buf);
+    // BCH_SB_ENCRYPTION_TYPE: bits 10..14
+    let enc_type = (flags1 >> 10) & 0xF;
+    Ok(enc_type != 0)
 }
 
 #[cfg(test)]
@@ -484,7 +496,7 @@ mod tests {
 
     #[test]
     fn probe_bcachefs_magic() {
-        let tmp = test_device(0x100c);
+        let tmp = test_device(0x101c); // must cover magic at 0x1018
         write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
         assert_eq!(probe_fs_type(&tmp).unwrap(), Some(FsType::Bcachefs));
     }
@@ -502,6 +514,47 @@ mod tests {
         write_at(&tmp, 0, LUKS_MAGIC);
         write_at(&tmp, EXT_SUPER_OFFSET, &EXT_MAGIC);
         assert_eq!(probe_fs_type(&tmp).unwrap(), Some(FsType::Luks));
+    }
+
+    // --- bcachefs encryption detection tests ---
+
+    #[test]
+    fn bcachefs_not_encrypted() {
+        let tmp = test_device(0x10a0); // must cover flags[1] at 0x1098
+        write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
+        // flags[1] is all zeros — no encryption
+        assert!(!bcachefs_is_encrypted(&tmp).unwrap());
+    }
+
+    #[test]
+    fn bcachefs_encrypted() {
+        let tmp = test_device(0x10a0);
+        write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
+        // Set BCH_SB_ENCRYPTION_TYPE (bits 10-14 of flags[1]) to 1
+        // 1 << 10 = 0x400
+        let flags1: u64 = 1 << 10;
+        write_at(&tmp, BCACHEFS_SB_START + 0x98, &flags1.to_le_bytes());
+        assert!(bcachefs_is_encrypted(&tmp).unwrap());
+    }
+
+    #[test]
+    fn bcachefs_encrypted_type_2() {
+        let tmp = test_device(0x10a0);
+        write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
+        // encryption type 3 (bits 10-14 = 0b0011)
+        let flags1: u64 = 3 << 10;
+        write_at(&tmp, BCACHEFS_SB_START + 0x98, &flags1.to_le_bytes());
+        assert!(bcachefs_is_encrypted(&tmp).unwrap());
+    }
+
+    #[test]
+    fn bcachefs_other_flags_not_encryption() {
+        let tmp = test_device(0x10a0);
+        write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
+        // Set bits around but not in the encryption field (bits 8-9, 14-15)
+        let flags1: u64 = (1 << 8) | (1 << 9) | (1 << 14) | (1 << 15);
+        write_at(&tmp, BCACHEFS_SB_START + 0x98, &flags1.to_le_bytes());
+        assert!(!bcachefs_is_encrypted(&tmp).unwrap());
     }
 
     // --- Test helpers ---
