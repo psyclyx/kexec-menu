@@ -159,6 +159,22 @@ enum TuiResult {
     },
 }
 
+enum SideScreen {
+    Passphrase {
+        source_idx: usize,
+        source_label: String,
+        input: String,
+        error: Option<String>,
+    },
+    FileBrowser {
+        source_label: String,
+        current_dir: PathBuf,
+        root: PathBuf,
+        menu: tui::Menu,
+        dir_entries: Vec<tui::DirEntry>,
+    },
+}
+
 fn run_tui(
     mut input: impl Read,
     mut output: impl Write,
@@ -169,137 +185,109 @@ fn run_tui(
     let _raw = RawMode::enter()?;
     tui::hide_cursor(&mut output)?;
 
-    let mut screen = tui::Screen::Sources(tui::build_source_menu(sources, default, trees));
+    let mut view = tui::TreeView::build(sources, trees, default);
+    let mut side: Option<SideScreen> = None;
 
     loop {
-        match &screen {
-            tui::Screen::Sources(menu) => {
-                tui::render_sources(&mut output, menu)?;
+        // Render
+        match &side {
+            None => {
+                tui::render_tree_view(&mut output, &view)?;
             }
-            tui::Screen::BootTree { source_label, menu, .. } => {
-                tui::render_boot_tree(&mut output, source_label, menu)?;
-            }
-            tui::Screen::Entries { source_label, leaf_label, menu, .. } => {
-                tui::render_entries(&mut output, source_label, leaf_label, menu)?;
-            }
-            tui::Screen::Passphrase { source_label, input: pw_input, error, .. } => {
+            Some(SideScreen::Passphrase { source_label, input: pw_input, error, .. }) => {
                 tui::render_passphrase(&mut output, source_label, pw_input, error.as_deref())?;
             }
-            tui::Screen::FileBrowser { source_label, current_dir, root, menu, .. } => {
+            Some(SideScreen::FileBrowser { source_label, current_dir, root, menu, .. }) => {
                 tui::render_file_browser(&mut output, source_label, current_dir, root, menu)?;
             }
         }
 
         let key = tui::read_key(&mut input)?;
 
-        match &mut screen {
-            tui::Screen::Sources(menu) => {
-                match tui::handle_source_key(menu, &key) {
+        // Handle input
+        match &mut side {
+            None => {
+                match tui::handle_tree_view_key(&mut view, &key) {
                     tui::Action::Quit => {
                         cleanup(&mut output)?;
                         return Ok(TuiResult::Quit);
                     }
-                    tui::Action::OpenSource(idx) => {
-                        tui::hide_cursor(&mut output)?;
-                        let tree = trees.get(idx).map(|(_, t)| t.as_slice()).unwrap_or(&[]);
-                        let label = trees.get(idx).map(|(l, _)| l.as_str()).unwrap_or("");
-                        let (menu, nodes) = tui::build_tree_menu(tree, default);
-                        screen = tui::Screen::BootTree {
-                            source_idx: idx,
-                            source_label: label.to_string(),
-                            menu,
-                            nodes,
-                        };
+                    tui::Action::Boot { entry, .. } => {
+                        // Find the leaf path from the entry's position in the tree
+                        let leaf_path = find_entry_leaf_path(&view);
+                        cleanup(&mut output)?;
+                        return Ok(TuiResult::Boot { leaf_path, entry });
                     }
                     tui::Action::UnlockSource(idx) => {
                         let label = sources.get(idx)
                             .map(|s| s.label.clone())
                             .unwrap_or_default();
-                        screen = tui::Screen::Passphrase {
+                        side = Some(SideScreen::Passphrase {
                             source_idx: idx,
                             source_label: label,
                             input: String::new(),
                             error: None,
-                        };
+                        });
                     }
-                    tui::Action::Redraw => {}
-                    _ => {}
-                }
-            }
-            tui::Screen::BootTree { source_idx, source_label, menu, nodes } => {
-                match tui::handle_tree_key(menu, nodes, &key) {
-                    tui::Action::Back => {
-                        screen = tui::Screen::Sources(
-                            tui::build_source_menu(sources, default, trees),
-                        );
-                    }
-                    tui::Action::OpenLeaf(flat_idx) => {
-                        if let Some(node) = nodes.get(flat_idx) {
-                            if let tui::FlatNodeKind::Leaf { name, path, .. } = &node.kind {
-                                if let Some(leaf) = find_leaf(trees, path) {
-                                    let entry_menu = tui::build_entry_menu(
-                                        &leaf.entries, default, &leaf.path,
-                                    );
-                                    screen = tui::Screen::Entries {
-                                        source_idx: *source_idx,
-                                        source_label: source_label.clone(),
-                                        leaf_label: name.clone(),
-                                        leaf_path: leaf.path.clone(),
-                                        menu: entry_menu,
-                                        entries: leaf.entries.clone(),
-                                    };
+                    tui::Action::OpenFileBrowser => {
+                        if let Some(src_idx) = view.cursor_source_idx() {
+                            if let Some(mp) = &sources[src_idx].mount_point {
+                                let root = mp.clone();
+                                if let Ok((file_menu, dir_entries)) = tui::build_file_menu(&root) {
+                                    let label = sources[src_idx].label.clone();
+                                    side = Some(SideScreen::FileBrowser {
+                                        source_label: label,
+                                        current_dir: root.clone(),
+                                        root,
+                                        menu: file_menu,
+                                        dir_entries,
+                                    });
                                 }
                             }
                         }
                     }
-                    tui::Action::OpenFileBrowser => {
+                    tui::Action::Redraw | tui::Action::None => {}
+                    _ => {}
+                }
+            }
+            Some(SideScreen::Passphrase { source_idx, input: pw_input, .. }) => {
+                let action = tui::handle_passphrase_key(pw_input, &key);
+                match action {
+                    tui::Action::SubmitPassphrase => {
                         let si = *source_idx;
-                        if let Some(mp) = &sources[si].mount_point {
-                            let root = mp.clone();
-                            if let Ok((file_menu, dir_entries)) = tui::build_file_menu(&root) {
-                                screen = tui::Screen::FileBrowser {
-                                    source_idx: si,
-                                    source_label: source_label.clone(),
-                                    current_dir: root.clone(),
-                                    root,
-                                    menu: file_menu,
-                                    dir_entries,
-                                };
+                        let passphrase = pw_input.clone();
+                        match mount::unlock_and_mount(&sources[si].device, &passphrase) {
+                            Ok(mp) => {
+                                sources[si].state = SourceState::Mounted;
+                                sources[si].mount_point = Some(mp);
+                                let mut new_trees = Vec::new();
+                                build_source_tree(&sources[si], &mut new_trees);
+                                if let Some(t) = new_trees.into_iter().next() {
+                                    trees[si] = t;
+                                }
+                                tui::hide_cursor(&mut output)?;
+                                view = tui::TreeView::build(sources, trees, default);
+                                side = None;
+                            }
+                            Err(e) => {
+                                if let Some(SideScreen::Passphrase { input, error, .. }) = &mut side {
+                                    *error = Some(format!("{e}"));
+                                    input.clear();
+                                }
                             }
                         }
                     }
-                    tui::Action::Redraw => {}
-                    _ => {}
-                }
-            }
-            tui::Screen::Entries { source_idx, source_label, leaf_path, menu, entries, .. } => {
-                match tui::handle_entry_key(menu, entries, *source_idx, &key) {
                     tui::Action::Back => {
-                        let si = *source_idx;
-                        let tree = trees.get(si).map(|(_, t)| t.as_slice()).unwrap_or(&[]);
-                        let label = source_label.clone();
-                        let (menu, nodes) = tui::build_tree_menu(tree, default);
-                        screen = tui::Screen::BootTree {
-                            source_idx: si,
-                            source_label: label,
-                            menu,
-                            nodes,
-                        };
-                    }
-                    tui::Action::Boot { entry, .. } => {
-                        cleanup(&mut output)?;
-                        return Ok(TuiResult::Boot {
-                            leaf_path: leaf_path.clone(),
-                            entry,
-                        });
+                        tui::hide_cursor(&mut output)?;
+                        side = None;
                     }
                     tui::Action::Redraw => {}
                     _ => {}
                 }
             }
-            tui::Screen::FileBrowser {
-                source_idx, source_label, current_dir, root, menu, dir_entries,
-            } => {
+            Some(SideScreen::FileBrowser {
+                current_dir, root, menu, dir_entries, ..
+            }) => {
                 match tui::handle_file_browser_key(menu, dir_entries, current_dir, root, &key) {
                     tui::Action::BootFile { path } => {
                         cleanup(&mut output)?;
@@ -326,57 +314,7 @@ fn run_tui(
                         }
                     }
                     tui::Action::Back => {
-                        // Return to boot tree
-                        let si = *source_idx;
-                        let label = source_label.clone();
-                        let tree = trees.get(si).map(|(_, t)| t.as_slice()).unwrap_or(&[]);
-                        let (tree_menu, nodes) = tui::build_tree_menu(tree, default);
-                        screen = tui::Screen::BootTree {
-                            source_idx: si,
-                            source_label: label,
-                            menu: tree_menu,
-                            nodes,
-                        };
-                    }
-                    tui::Action::Redraw => {}
-                    _ => {}
-                }
-            }
-            tui::Screen::Passphrase { source_idx, input: pw_input, .. } => {
-                let action = tui::handle_passphrase_key(pw_input, &key);
-                match action {
-                    tui::Action::SubmitPassphrase => {
-                        let si = *source_idx;
-                        let passphrase = pw_input.clone();
-                        // Borrow of screen fields ends here (si copied, passphrase cloned)
-                        match mount::unlock_and_mount(&sources[si].device, &passphrase) {
-                            Ok(mp) => {
-                                sources[si].state = SourceState::Mounted;
-                                sources[si].mount_point = Some(mp);
-                                // Rebuild tree for this source
-                                let mut new_trees = Vec::new();
-                                build_source_tree(&sources[si], &mut new_trees);
-                                if let Some(t) = new_trees.into_iter().next() {
-                                    trees[si] = t;
-                                }
-                                tui::hide_cursor(&mut output)?;
-                                screen = tui::Screen::Sources(
-                                    tui::build_source_menu(sources, default, trees),
-                                );
-                            }
-                            Err(e) => {
-                                if let tui::Screen::Passphrase { input, error, .. } = &mut screen {
-                                    *error = Some(format!("{e}"));
-                                    input.clear();
-                                }
-                            }
-                        }
-                    }
-                    tui::Action::Back => {
-                        tui::hide_cursor(&mut output)?;
-                        screen = tui::Screen::Sources(
-                            tui::build_source_menu(sources, default, trees),
-                        );
+                        side = None;
                     }
                     tui::Action::Redraw => {}
                     _ => {}
@@ -384,6 +322,17 @@ fn run_tui(
             }
         }
     }
+}
+
+/// Find the leaf path for the entry at the current cursor position in the tree view.
+fn find_entry_leaf_path(view: &tui::TreeView) -> PathBuf {
+    // Walk backward from cursor to find the parent Leaf node
+    for i in (0..=view.cursor).rev() {
+        if let tui::NodeKind::Leaf { path, .. } = &view.nodes[i].kind {
+            return path.clone();
+        }
+    }
+    PathBuf::new()
 }
 
 fn build_source_tree(src: &Source, trees: &mut Vec<(String, Vec<TreeNode>)>) {

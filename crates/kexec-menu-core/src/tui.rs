@@ -899,6 +899,183 @@ pub fn render_passphrase(
     w.flush()
 }
 
+/// Render the unified tree view screen.
+pub fn render_tree_view(w: &mut impl Write, view: &TreeView) -> io::Result<()> {
+    clear_screen(w)?;
+    move_cursor(w, 1, 1)?;
+
+    // Title bar
+    set_bold(w)?;
+    write!(w, " {TITLE}")?;
+    reset_style(w)?;
+    write!(w, "\r\n\r\n")?;
+
+    for (i, node) in view.nodes.iter().enumerate() {
+        if !node.visible {
+            continue;
+        }
+
+        let is_cursor = i == view.cursor;
+        let indent = "  ".repeat(node.depth);
+
+        write!(w, " ")?;
+
+        if is_cursor {
+            set_reverse(w)?;
+        }
+
+        match &node.kind {
+            NodeKind::Source { label, state, .. } => {
+                let arrow = if matches!(state, NodeSourceState::Empty | NodeSourceState::Encrypted | NodeSourceState::Error(_)) {
+                    " "
+                } else if node.expanded {
+                    "▼"
+                } else {
+                    "▶"
+                };
+                let detail = match state {
+                    NodeSourceState::Encrypted => " [locked]",
+                    NodeSourceState::Error(e) => {
+                        // Write the main part first, then the error
+                        write!(w, " {arrow} {indent}")?;
+                        set_bold(w)?;
+                        if is_cursor {
+                            set_reverse(w)?;
+                        }
+                        write!(w, "{label}")?;
+                        reset_style(w)?;
+                        if is_cursor {
+                            set_reverse(w)?;
+                        }
+                        set_dim(w)?;
+                        write!(w, "  [error: {e}]")?;
+                        reset_style(w)?;
+                        write!(w, "\r\n")?;
+                        continue;
+                    }
+                    NodeSourceState::Empty => " (empty)",
+                    NodeSourceState::Static => " [static]",
+                    NodeSourceState::Mounted => "",
+                };
+                write!(w, " {arrow} {indent}")?;
+                set_bold(w)?;
+                if is_cursor {
+                    set_reverse(w)?;
+                }
+                write!(w, "{label}")?;
+                if !detail.is_empty() {
+                    reset_style(w)?;
+                    if is_cursor {
+                        set_reverse(w)?;
+                    }
+                    set_dim(w)?;
+                    write!(w, "{detail}")?;
+                }
+                reset_style(w)?;
+            }
+            NodeKind::Dir { name } => {
+                let arrow = if node.expanded { "▼" } else { "▶" };
+                write!(w, " {arrow} {indent}{name}/")?;
+                if is_cursor {
+                    reset_style(w)?;
+                }
+            }
+            NodeKind::Leaf { name, entry_count, .. } => {
+                let arrow = if node.expanded { "▼" } else { "▶" };
+                write!(w, " {arrow} {indent}{name}")?;
+                if !node.expanded && *entry_count > 0 {
+                    if is_cursor {
+                        reset_style(w)?;
+                    }
+                    set_dim(w)?;
+                    write!(w, "  ({entry_count} entries)")?;
+                    reset_style(w)?;
+                } else if is_cursor {
+                    reset_style(w)?;
+                }
+            }
+            NodeKind::Entry { entry, .. } => {
+                let marker = if node.is_default { "*" } else { " " };
+                write!(w, " {marker} {indent}{}", entry.name)?;
+                if is_cursor {
+                    reset_style(w)?;
+                }
+            }
+        }
+
+        // Ensure style is reset for non-cursor rows that didn't reset yet
+        if is_cursor {
+            reset_style(w)?;
+        }
+        write!(w, "\r\n")?;
+    }
+
+    // Hint bar
+    write!(w, "\r\n")?;
+    set_dim(w)?;
+    write!(w, " ↑↓ navigate  Enter select/toggle  ←→ collapse/expand  f filesystem  q quit")?;
+    reset_style(w)?;
+
+    w.flush()
+}
+
+/// Handle a key press on the tree view screen.
+pub fn handle_tree_view_key(view: &mut TreeView, key: &Key) -> Action {
+    match key {
+        Key::Up => {
+            view.move_up();
+            Action::Redraw
+        }
+        Key::Down => {
+            view.move_down();
+            Action::Redraw
+        }
+        Key::Right => {
+            if view.expand() {
+                Action::Redraw
+            } else {
+                Action::None
+            }
+        }
+        Key::Left => {
+            if view.collapse() {
+                Action::Redraw
+            } else {
+                Action::None
+            }
+        }
+        Key::Enter => {
+            if let Some(node) = view.selected() {
+                match &node.kind {
+                    NodeKind::Entry { entry, source_idx } => {
+                        Action::Boot {
+                            source_idx: *source_idx,
+                            entry: entry.clone(),
+                        }
+                    }
+                    NodeKind::Source { idx, state, .. } => {
+                        if matches!(state, NodeSourceState::Encrypted) {
+                            Action::UnlockSource(*idx)
+                        } else {
+                            view.toggle();
+                            Action::Redraw
+                        }
+                    }
+                    _ => {
+                        view.toggle();
+                        Action::Redraw
+                    }
+                }
+            } else {
+                Action::None
+            }
+        }
+        Key::Char('f') | Key::Char('F') => Action::OpenFileBrowser,
+        Key::Char('q') | Key::Char('Q') => Action::Quit,
+        _ => Action::None,
+    }
+}
+
 /// Handle a key press on the passphrase prompt screen.
 pub fn handle_passphrase_key(input: &mut String, key: &Key) -> Action {
     match key {
@@ -2111,5 +2288,191 @@ mod tests {
         view.cursor = 0;
         let changed = view.collapse();
         assert!(!changed);
+    }
+
+    // --- TreeView rendering tests ---
+
+    #[test]
+    fn render_tree_view_basic() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let view = TreeView::build(&sources, &trees, Some(&default));
+
+        let mut buf = Vec::new();
+        render_tree_view(&mut buf, &view).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("kexec-menu"));
+        assert!(output.contains("nvme0n1p2 (bcachefs)"));
+        assert!(output.contains("nixos/"));
+        assert!(output.contains("NixOS default"));
+        assert!(output.contains("NixOS fallback"));
+        // gen1 visible but collapsed, should show entry count
+        assert!(output.contains("gen1"));
+        assert!(output.contains("(1 entries)"));
+    }
+
+    #[test]
+    fn render_tree_view_default_marker() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let view = TreeView::build(&sources, &trees, Some(&default));
+
+        let mut buf = Vec::new();
+        render_tree_view(&mut buf, &view).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        // Default entry should have * marker
+        assert!(output.contains("*"));
+    }
+
+    #[test]
+    fn render_tree_view_encrypted_source() {
+        let sources = vec![Source {
+            label: "sda1 (luks)".into(),
+            device: PathBuf::from("/dev/sda1"),
+            state: SourceState::Encrypted,
+            mount_point: None,
+        }];
+        let trees = vec![("sda1".into(), Vec::new())];
+        let view = TreeView::build(&sources, &trees, None);
+
+        let mut buf = Vec::new();
+        render_tree_view(&mut buf, &view).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("sda1 (luks)"));
+        assert!(output.contains("[locked]"));
+    }
+
+    #[test]
+    fn render_tree_view_hint_bar() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let view = TreeView::build(&sources, &trees, None);
+
+        let mut buf = Vec::new();
+        render_tree_view(&mut buf, &view).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("navigate"));
+        assert!(output.contains("quit"));
+    }
+
+    // --- TreeView key handling tests ---
+
+    #[test]
+    fn handle_tree_view_enter_on_entry_boots() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Cursor is on default entry (index 3)
+        let action = handle_tree_view_key(&mut view, &Key::Enter);
+        match action {
+            Action::Boot { entry, .. } => {
+                assert_eq!(entry.name, "NixOS default");
+            }
+            _ => panic!("expected Boot action"),
+        }
+    }
+
+    #[test]
+    fn handle_tree_view_enter_on_dir_toggles() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Move to nixos dir (index 1), it's expanded
+        view.cursor = 1;
+        assert!(view.nodes[1].expanded);
+        let action = handle_tree_view_key(&mut view, &Key::Enter);
+        assert!(matches!(action, Action::Redraw));
+        assert!(!view.nodes[1].expanded);
+    }
+
+    #[test]
+    fn handle_tree_view_enter_on_encrypted_unlocks() {
+        let sources = vec![Source {
+            label: "sda1".into(),
+            device: PathBuf::from("/dev/sda1"),
+            state: SourceState::Encrypted,
+            mount_point: None,
+        }];
+        let trees = vec![("sda1".into(), Vec::new())];
+        let mut view = TreeView::build(&sources, &trees, None);
+
+        let action = handle_tree_view_key(&mut view, &Key::Enter);
+        assert!(matches!(action, Action::UnlockSource(0)));
+    }
+
+    #[test]
+    fn handle_tree_view_q_quits() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let mut view = TreeView::build(&sources, &trees, None);
+
+        let action = handle_tree_view_key(&mut view, &Key::Char('q'));
+        assert!(matches!(action, Action::Quit));
+    }
+
+    #[test]
+    fn handle_tree_view_f_opens_file_browser() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let mut view = TreeView::build(&sources, &trees, None);
+
+        let action = handle_tree_view_key(&mut view, &Key::Char('f'));
+        assert!(matches!(action, Action::OpenFileBrowser));
+    }
+
+    #[test]
+    fn handle_tree_view_arrows_navigate() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // Cursor at 3, move up
+        let action = handle_tree_view_key(&mut view, &Key::Up);
+        assert!(matches!(action, Action::Redraw));
+        assert_eq!(view.cursor, 2);
+
+        // Move down
+        let action = handle_tree_view_key(&mut view, &Key::Down);
+        assert!(matches!(action, Action::Redraw));
+        assert_eq!(view.cursor, 3);
+    }
+
+    #[test]
+    fn handle_tree_view_right_expands() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // gen1 at index 5 is collapsed
+        view.cursor = 5;
+        let action = handle_tree_view_key(&mut view, &Key::Right);
+        assert!(matches!(action, Action::Redraw));
+        assert!(view.nodes[5].expanded);
+    }
+
+    #[test]
+    fn handle_tree_view_left_collapses() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let default = test_default();
+        let mut view = TreeView::build(&sources, &trees, Some(&default));
+
+        // nixos dir at index 1 is expanded
+        view.cursor = 1;
+        let action = handle_tree_view_key(&mut view, &Key::Left);
+        assert!(matches!(action, Action::Redraw));
+        assert!(!view.nodes[1].expanded);
     }
 }
