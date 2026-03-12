@@ -8,9 +8,12 @@
   rustPlatform,
   # Overridable target triple; defaults to the host musl target.
   target ? "x86_64-unknown-linux-musl",
+  # Optional base16 theme: attrset of { base00 = "1d1f21"; ... base0F = "a3685a"; }
+  # Passed to the binary as a compile-time JSON env var.
+  theme ? null,
 }:
 
-rustPlatform.buildRustPackage {
+rustPlatform.buildRustPackage ({
   pname = "kexec-menu";
   version = "0.1.0";
 
@@ -37,4 +40,7 @@ rustPlatform.buildRustPackage {
     license = lib.licenses.mit;
     mainProgram = "kexec-menu";
   };
-}
+} // lib.optionalAttrs (theme != null) {
+  # Base16 theme as JSON, read by the binary via option_env!("KEXEC_MENU_THEME")
+  KEXEC_MENU_THEME = builtins.toJSON theme;
+})
