@@ -36,6 +36,7 @@ pub enum SourceState {
     Mounted,
     Encrypted,
     Error(String),
+    Static,
 }
 
 /// A boot entry from entries.json.

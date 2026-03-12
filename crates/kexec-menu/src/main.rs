@@ -26,15 +26,30 @@ fn run(dry_run: bool) -> Result<(), Box<dyn std::fmt::Display>> {
 
     // Discover filesystem sources
     let mut sources = mount::discover_sources().map_err(boxed)?;
-    if sources.is_empty() {
-        eprintln!("kexec-menu: no boot sources found");
-        process::exit(1);
-    }
 
     // Build boot trees for each source (1:1 with sources vec)
     let mut trees: Vec<(String, Vec<TreeNode>)> = Vec::new();
     for src in &sources {
         build_source_tree(src, &mut trees);
+    }
+
+    // Append static build-time entries
+    let static_path = std::path::Path::new(tree::STATIC_ENTRIES_PATH);
+    match tree::load_static_entries(static_path) {
+        Ok(statics) => {
+            for (src, label, tree_nodes) in statics {
+                sources.push(src);
+                trees.push((label, tree_nodes));
+            }
+        }
+        Err(e) => {
+            eprintln!("kexec-menu: warning: static entries: {e}");
+        }
+    }
+
+    if sources.is_empty() {
+        eprintln!("kexec-menu: no boot sources found");
+        process::exit(1);
     }
 
     // Resolve default boot selection

@@ -247,9 +247,10 @@ pub fn build_source_menu(
                 SourceState::Mounted => "",
                 SourceState::Encrypted => " [locked]",
                 SourceState::Error(_) => " [error]",
+                SourceState::Static => " [static]",
             };
             let item_state = match &src.state {
-                SourceState::Mounted => ItemState::Normal,
+                SourceState::Mounted | SourceState::Static => ItemState::Normal,
                 SourceState::Encrypted => ItemState::Locked,
                 SourceState::Error(e) => ItemState::Error(e.clone()),
             };

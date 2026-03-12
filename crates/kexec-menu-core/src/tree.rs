@@ -1,7 +1,7 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::types::{Entry, Error, Leaf, Result, TreeNode};
+use crate::types::{Entry, Error, Leaf, Result, Source, SourceState, TreeNode};
 
 // --- Hand-rolled JSON parser for entries.json ---
 //
@@ -204,6 +204,136 @@ pub fn walk_boot_tree(root: &Path) -> Result<Vec<TreeNode>> {
     Ok(nodes)
 }
 
+// --- Static build-time entries ---
+//
+// Loaded from /etc/kexec-menu/static.json (placed in initramfs at build time).
+// Each entry becomes a Source + single-leaf tree in the UI.
+//
+// Format: [{"name": "Memtest86+", "dir": "/static/memtest", "kernel": "memtest.bin", "initrd": "", "cmdline": ""}]
+
+pub const STATIC_ENTRIES_PATH: &str = "/etc/kexec-menu/static.json";
+
+/// A raw static entry from the config file.
+#[derive(Debug)]
+struct StaticConfig {
+    name: String,
+    dir: String,
+    kernel: String,
+    initrd: String,
+    cmdline: String,
+}
+
+fn parse_static_config(json: &str) -> Result<Vec<StaticConfig>> {
+    let mut parser = JsonParser::new(json);
+    parser.skip_ws();
+    parser.expect(b'[')?;
+    let mut configs = Vec::new();
+    parser.skip_ws();
+    if parser.peek() == Some(b']') {
+        parser.advance();
+        return Ok(configs);
+    }
+    loop {
+        configs.push(parse_one_static_config(&mut parser)?);
+        parser.skip_ws();
+        match parser.peek() {
+            Some(b',') => { parser.advance(); }
+            Some(b']') => { parser.advance(); break; }
+            Some(c) => return Err(Error::Parse(format!("expected ',' or ']', got '{}'", c as char))),
+            None => return Err(Error::Parse("unexpected end of input".into())),
+        }
+    }
+    Ok(configs)
+}
+
+fn parse_one_static_config(p: &mut JsonParser) -> Result<StaticConfig> {
+    p.skip_ws();
+    p.expect(b'{')?;
+
+    let mut name = None;
+    let mut dir = None;
+    let mut kernel = None;
+    let mut initrd = None;
+    let mut cmdline = None;
+
+    p.skip_ws();
+    if p.peek() == Some(b'}') {
+        p.advance();
+        return Err(Error::Parse("empty static entry object".into()));
+    }
+
+    loop {
+        p.skip_ws();
+        let key = p.parse_string()?;
+        p.skip_ws();
+        p.expect(b':')?;
+        p.skip_ws();
+        let val = p.parse_string()?;
+
+        match key.as_str() {
+            "name" => name = Some(val),
+            "dir" => dir = Some(val),
+            "kernel" => kernel = Some(val),
+            "initrd" => initrd = Some(val),
+            "cmdline" => cmdline = Some(val),
+            other => return Err(Error::Parse(format!("unknown field in static entry: {other}"))),
+        }
+
+        p.skip_ws();
+        match p.peek() {
+            Some(b',') => { p.advance(); }
+            Some(b'}') => { p.advance(); break; }
+            Some(c) => return Err(Error::Parse(format!("expected ',' or '}}', got '{}'", c as char))),
+            None => return Err(Error::Parse("unexpected end of input in object".into())),
+        }
+    }
+
+    let name = name.ok_or_else(|| Error::Parse("missing field: name".into()))?;
+    let dir = dir.ok_or_else(|| Error::Parse("missing field: dir".into()))?;
+    let kernel = kernel.ok_or_else(|| Error::Parse("missing field: kernel".into()))?;
+    let initrd = initrd.ok_or_else(|| Error::Parse("missing field: initrd".into()))?;
+    let cmdline = cmdline.ok_or_else(|| Error::Parse("missing field: cmdline".into()))?;
+
+    Ok(StaticConfig { name, dir, kernel, initrd, cmdline })
+}
+
+/// Load static entries from a config file, returning (sources, trees) to append.
+/// Returns empty vecs if the config file doesn't exist.
+pub fn load_static_entries(path: &Path) -> Result<Vec<(Source, String, Vec<TreeNode>)>> {
+    let json = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    let configs = parse_static_config(&json)?;
+    let mut result = Vec::new();
+
+    for cfg in configs {
+        let dir_path = PathBuf::from(&cfg.dir);
+        let entry = Entry {
+            name: cfg.name.clone(),
+            kernel: cfg.kernel,
+            initrd: cfg.initrd,
+            cmdline: cfg.cmdline,
+        };
+        let leaf = Leaf {
+            path: dir_path.clone(),
+            entries: vec![entry],
+            mtime: 0,
+        };
+        let tree = vec![TreeNode::Leaf(leaf)];
+        let source = Source {
+            label: cfg.name.clone(),
+            device: dir_path,
+            state: SourceState::Static,
+            mount_point: None,
+        };
+        result.push((source, cfg.name, tree));
+    }
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +508,91 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    // --- Static entry config parsing tests ---
+
+    #[test]
+    fn parse_static_single_entry() {
+        let json = r#"[{"name":"Memtest86+","dir":"/static/memtest","kernel":"memtest.bin","initrd":"","cmdline":""}]"#;
+        let configs = parse_static_config(json).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "Memtest86+");
+        assert_eq!(configs[0].dir, "/static/memtest");
+        assert_eq!(configs[0].kernel, "memtest.bin");
+    }
+
+    #[test]
+    fn parse_static_multiple_entries() {
+        let json = r#"[
+            {"name": "Memtest86+", "dir": "/static/memtest", "kernel": "memtest.bin", "initrd": "", "cmdline": ""},
+            {"name": "netboot.xyz", "dir": "/static/netboot", "kernel": "netboot.efi", "initrd": "", "cmdline": ""}
+        ]"#;
+        let configs = parse_static_config(json).unwrap();
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].name, "Memtest86+");
+        assert_eq!(configs[1].name, "netboot.xyz");
+    }
+
+    #[test]
+    fn parse_static_empty_array() {
+        let configs = parse_static_config("[]").unwrap();
+        assert!(configs.is_empty());
+    }
+
+    #[test]
+    fn parse_static_missing_field() {
+        let json = r#"[{"name": "x", "dir": "/d", "kernel": "k"}]"#;
+        let err = parse_static_config(json).unwrap_err();
+        assert!(matches!(err, Error::Parse(_)));
+    }
+
+    #[test]
+    fn parse_static_unknown_field() {
+        let json = r#"[{"name":"x","dir":"/d","kernel":"k","initrd":"i","cmdline":"c","extra":"bad"}]"#;
+        let err = parse_static_config(json).unwrap_err();
+        assert!(matches!(err, Error::Parse(ref s) if s.contains("unknown")));
+    }
+
+    // --- Static entry loading tests ---
+
+    #[test]
+    fn load_static_entries_missing_file() {
+        let result = load_static_entries(Path::new("/nonexistent/static.json")).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn load_static_entries_from_file() {
+        let tmp = tempdir();
+        let config_path = tmp.join("static.json");
+        fs::write(&config_path, r#"[{"name":"Memtest","dir":"/static/mt","kernel":"mt.bin","initrd":"","cmdline":""}]"#).unwrap();
+
+        let result = load_static_entries(&config_path).unwrap();
+        assert_eq!(result.len(), 1);
+        let (src, label, tree) = &result[0];
+        assert_eq!(src.label, "Memtest");
+        assert_eq!(label, "Memtest");
+        assert!(matches!(src.state, SourceState::Static));
+        assert!(src.mount_point.is_none());
+        assert_eq!(tree.len(), 1);
+        match &tree[0] {
+            TreeNode::Leaf(leaf) => {
+                assert_eq!(leaf.path, PathBuf::from("/static/mt"));
+                assert_eq!(leaf.entries.len(), 1);
+                assert_eq!(leaf.entries[0].name, "Memtest");
+                assert_eq!(leaf.entries[0].kernel, "mt.bin");
+            }
+            _ => panic!("expected leaf"),
+        }
+    }
+
+    #[test]
+    fn load_static_entries_empty_config() {
+        let tmp = tempdir();
+        let config_path = tmp.join("static.json");
+        fs::write(&config_path, "[]").unwrap();
+        let result = load_static_entries(&config_path).unwrap();
+        assert!(result.is_empty());
     }
 }
