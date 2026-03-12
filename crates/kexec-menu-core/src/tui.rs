@@ -85,6 +85,93 @@ pub fn show_cursor(w: &mut impl Write) -> io::Result<()> {
     w.write_all(b"\x1b[?25h")
 }
 
+// --- Theme ---
+
+/// Base16 color theme, parsed from the compile-time KEXEC_MENU_THEME env var.
+/// When set, remaps the VT palette via OSC sequences so all ANSI colors
+/// automatically reflect the theme.
+pub struct Theme {
+    colors: [u32; 16], // RGB for base00..base0F
+}
+
+// Maps VT palette slots 0-15 to base16 indices (base16-shell convention).
+const VT_TO_BASE16: [usize; 16] = [
+    0x00, // 0  black      → base00
+    0x08, // 1  red        → base08
+    0x0B, // 2  green      → base0B
+    0x0A, // 3  yellow     → base0A
+    0x0D, // 4  blue       → base0D
+    0x0E, // 5  magenta    → base0E
+    0x0C, // 6  cyan       → base0C
+    0x05, // 7  white      → base05
+    0x03, // 8  br.black   → base03
+    0x09, // 9  br.red     → base09
+    0x01, // 10 br.green   → base01
+    0x02, // 11 br.yellow  → base02
+    0x04, // 12 br.blue    → base04
+    0x06, // 13 br.magenta → base06
+    0x0F, // 14 br.cyan    → base0F
+    0x07, // 15 br.white   → base07
+];
+
+impl Theme {
+    /// Try to load the compile-time theme.
+    pub fn from_env() -> Option<Self> {
+        let json = option_env!("KEXEC_MENU_THEME")?;
+        Self::parse(json)
+    }
+
+    /// Parse a JSON object like {"base00":"1d1f21","base01":"282a2e",...}.
+    fn parse(json: &str) -> Option<Self> {
+        let mut colors = [0u32; 16];
+        for i in 0..16u8 {
+            let key = if i < 10 {
+                [b'b', b'a', b's', b'e', b'0', b'0' + i]
+            } else {
+                [b'b', b'a', b's', b'e', b'0', b'A' + (i - 10)]
+            };
+            let key_str = core::str::from_utf8(&key).ok()?;
+            let pos = json.find(key_str)?;
+            // After the key: skip closing quote, colon, opening quote → value
+            let rest = &json[pos + 6..];
+            // Find the value string: look for ":"  pattern
+            let colon = rest.find(':')?;
+            let after_colon = &rest[colon + 1..];
+            let open_quote = after_colon.find('"')?;
+            let value_start = &after_colon[open_quote + 1..];
+            let close_quote = value_start.find('"')?;
+            let hex = &value_start[..close_quote];
+            let hex = hex.strip_prefix('#').unwrap_or(hex);
+            if hex.len() != 6 {
+                return None;
+            }
+            colors[i as usize] = u32::from_str_radix(hex, 16).ok()?;
+        }
+        Some(Theme { colors })
+    }
+
+    fn write_osc_color(w: &mut impl Write, code: &str, rgb: u32) -> io::Result<()> {
+        let r = (rgb >> 16) & 0xFF;
+        let g = (rgb >> 8) & 0xFF;
+        let b = rgb & 0xFF;
+        write!(w, "\x1b]{};rgb:{:02x}/{:02x}/{:02x}\x1b\\", code, r, g, b)
+    }
+
+    /// Emit OSC sequences to remap the VT palette and set default fg/bg.
+    pub fn apply(&self, w: &mut impl Write) -> io::Result<()> {
+        for (vt_slot, &base_idx) in VT_TO_BASE16.iter().enumerate() {
+            let code = format!("4;{}", vt_slot);
+            Self::write_osc_color(w, &code, self.colors[base_idx])?;
+        }
+        // Default foreground (base05) and background (base00)
+        Self::write_osc_color(w, "10", self.colors[0x05])?;
+        Self::write_osc_color(w, "11", self.colors[0x00])?;
+        // Cursor color (base05)
+        Self::write_osc_color(w, "12", self.colors[0x05])?;
+        w.flush()
+    }
+}
+
 // --- Menu model ---
 
 /// A navigable list of items with a cursor and optional pre-selected index.
@@ -2008,5 +2095,49 @@ mod tests {
         let action = handle_tree_view_key(&mut view, &Key::Left);
         assert!(matches!(action, Action::Redraw));
         assert!(!view.nodes[1].expanded);
+    }
+
+    // --- Theme tests ---
+
+    const TEST_THEME_JSON: &str = r#"{"base00":"1d1f21","base01":"282a2e","base02":"373b41","base03":"969896","base04":"b4b7b4","base05":"c5c8c6","base06":"e0e0e0","base07":"ffffff","base08":"cc6666","base09":"de935f","base0A":"f0c674","base0B":"b5bd68","base0C":"8abeb7","base0D":"81a2be","base0E":"b294bb","base0F":"a3685a"}"#;
+
+    #[test]
+    fn theme_parse_valid() {
+        let theme = Theme::parse(TEST_THEME_JSON).unwrap();
+        assert_eq!(theme.colors[0x00], 0x1d1f21);
+        assert_eq!(theme.colors[0x05], 0xc5c8c6);
+        assert_eq!(theme.colors[0x0F], 0xa3685a);
+    }
+
+    #[test]
+    fn theme_parse_invalid_missing_key() {
+        let json = r#"{"base00":"1d1f21"}"#;
+        assert!(Theme::parse(json).is_none());
+    }
+
+    #[test]
+    fn theme_parse_invalid_short_hex() {
+        let json = r#"{"base00":"1d1f","base01":"282a2e","base02":"373b41","base03":"969896","base04":"b4b7b4","base05":"c5c8c6","base06":"e0e0e0","base07":"ffffff","base08":"cc6666","base09":"de935f","base0A":"f0c674","base0B":"b5bd68","base0C":"8abeb7","base0D":"81a2be","base0E":"b294bb","base0F":"a3685a"}"#;
+        assert!(Theme::parse(json).is_none());
+    }
+
+    #[test]
+    fn theme_apply_emits_osc() {
+        let theme = Theme::parse(TEST_THEME_JSON).unwrap();
+        let mut buf = Vec::new();
+        theme.apply(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        // Should contain OSC 4 sequences for 16 palette slots
+        for i in 0..16 {
+            assert!(output.contains(&format!("\x1b]4;{};rgb:", i)));
+        }
+        // Should contain OSC 10 (fg), 11 (bg), 12 (cursor)
+        assert!(output.contains("\x1b]10;rgb:"));
+        assert!(output.contains("\x1b]11;rgb:"));
+        assert!(output.contains("\x1b]12;rgb:"));
+        // base00 = 1d1f21 should appear as bg (OSC 11)
+        assert!(output.contains("rgb:1d/1f/21"));
+        // base05 = c5c8c6 should appear as fg (OSC 10)
+        assert!(output.contains("rgb:c5/c8/c6"));
     }
 }

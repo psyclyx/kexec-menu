@@ -199,6 +199,11 @@ fn run_tui(
     let _raw = RawMode::enter()?;
     tui::hide_cursor(&mut output)?;
 
+    // Apply compile-time theme if set
+    if let Some(theme) = tui::Theme::from_env() {
+        theme.apply(&mut output)?;
+    }
+
     let mut view = tui::TreeView::build(sources, trees, default);
     let mut side: Option<SideScreen> = None;
 
