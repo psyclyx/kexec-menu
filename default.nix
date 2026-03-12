@@ -9,6 +9,7 @@
 #   nix-build             # builds kexec-menu (x86_64)
 #   nix-build -A kexec-menu-aarch64
 #   nix-build -A tests.installer
+#   $(nix-build -A tests.qemu)   # QEMU integration test (requires KVM)
 let
   sources = import ./npins;
   pkgs = import sources.nixpkgs {};
@@ -26,5 +27,6 @@ in
 
   tests = {
     installer = import ./tests/nixos/installer.nix;
+    qemu = import ./tests/qemu/test.nix;
   };
 }

@@ -77,9 +77,11 @@ if ldd "$BINARY" &>/dev/null 2>&1; then
     fi
 fi
 
-# --- Create test disk ---
+# --- Create test disk (tmpfile, cleaned up on exit) ---
 mkdir -p "$BUILD_DIR"
-DISK="$BUILD_DIR/test-disk.ext4"
+DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.ext4")"
+cleanup_disk() { rm -f "$DISK"; }
+trap cleanup_disk EXIT
 "$REPO_ROOT/tests/qemu/create-test-disk.sh" "$DISK"
 
 # --- Create initrd ---
