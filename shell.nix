@@ -38,6 +38,9 @@ pkgs.mkShell {
   QEMU_KERNEL = "${pkgs.linuxPackages.kernel}/bzImage";
   QEMU_KERNEL_MODULES = "${pkgs.linuxPackages.kernel.modules}/lib/modules/${pkgs.linuxPackages.kernel.modDirVersion}";
 
+  # Static busybox for initrd (the one in PATH may be dynamically linked)
+  BUSYBOX_STATIC = "${pkgs.pkgsStatic.busybox}/bin/busybox";
+
   shellHook = ''
     echo "kexec-menu dev shell"
     echo "  cargo target: x86_64-unknown-linux-musl (static)"

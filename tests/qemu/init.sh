@@ -19,10 +19,10 @@ if [ -d /lib/modules ]; then
     echo "Loading kernel modules..."
     # Load order matters: dependencies first
     for mod in \
-        virtio virtio_ring \
+        virtio_ring virtio \
         virtio_pci_modern_dev virtio_pci_legacy_dev virtio_pci \
         virtio_blk \
-        crc16 crc32c_generic libcrc32c mbcache jbd2 \
+        crc16 crc32c-cryptoapi mbcache jbd2 \
         ext4; do
         ko="/lib/modules/${mod}.ko"
         if [ -f "$ko" ]; then

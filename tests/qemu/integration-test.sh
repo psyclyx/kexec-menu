@@ -74,7 +74,11 @@ INITRD_DIR="$BUILD_DIR/initrd-test-root"
 rm -rf "$INITRD_DIR"
 mkdir -p "$INITRD_DIR"/{bin,dev,proc,sys,mnt,run,etc,tmp}
 
-BUSYBOX="$(command -v busybox)"
+if [[ -n "${BUSYBOX_STATIC:-}" && -f "$BUSYBOX_STATIC" ]]; then
+    BUSYBOX="$BUSYBOX_STATIC"
+else
+    BUSYBOX="$(command -v busybox)"
+fi
 cp "$BUSYBOX" "$INITRD_DIR/bin/busybox"
 for cmd in sh mount umount mkdir ls cat sleep poweroff insmod grep; do
     ln -sf busybox "$INITRD_DIR/bin/$cmd"
@@ -86,16 +90,15 @@ chmod +x "$INITRD_DIR/init"
 
 # --- Include kernel modules ---
 NEEDED_MODULES=(
-    "drivers/virtio/virtio.ko"
     "drivers/virtio/virtio_ring.ko"
+    "drivers/virtio/virtio.ko"
     "drivers/virtio/virtio_pci_modern_dev.ko"
     "drivers/virtio/virtio_pci_legacy_dev.ko"
     "drivers/virtio/virtio_pci.ko"
     "drivers/block/virtio_blk.ko"
     "lib/crc16.ko"
     "lib/crc/crc16.ko"
-    "crypto/crc32c_generic.ko"
-    "lib/libcrc32c.ko"
+    "crypto/crc32c-cryptoapi.ko"
     "fs/mbcache.ko"
     "fs/jbd2/jbd2.ko"
     "fs/ext4/ext4.ko"
