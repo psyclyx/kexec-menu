@@ -96,13 +96,14 @@ pub fn write_efi_selection(sel: &BootSelection) -> Result<()> {
 fn remove_immutable(path: &Path) {
     // FS_IOC_SETFLAGS = 0x40086602 on x86_64, 0x40046602 on aarch64
     #[cfg(target_arch = "x86_64")]
-    const FS_IOC_SETFLAGS: libc::c_ulong = 0x40086602;
+    const FS_IOC_SETFLAGS: u32 = 0x40086602;
     #[cfg(target_arch = "aarch64")]
-    const FS_IOC_SETFLAGS: libc::c_ulong = 0x40046602;
+    const FS_IOC_SETFLAGS: u32 = 0x40046602;
 
     if let Ok(f) = fs::OpenOptions::new().write(true).open(path) {
         let flags: libc::c_long = 0;
-        unsafe { libc::ioctl(f.as_raw_fd(), FS_IOC_SETFLAGS, &flags) };
+        // libc::Ioctl is c_ulong on glibc, c_int on musl; cast to handle both
+        unsafe { libc::ioctl(f.as_raw_fd(), FS_IOC_SETFLAGS as libc::Ioctl, &flags) };
     }
 }
 
