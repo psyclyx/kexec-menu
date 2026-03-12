@@ -5,7 +5,6 @@
 # Usage:
 #   nix-shell tests/qemu/shell.nix --run ./tests/qemu/run.sh
 #   ./tests/qemu/run.sh --no-build   # skip cargo build, reuse last binary
-#   KERNEL=/path/to/vmlinuz ./tests/qemu/run.sh  # custom kernel
 #
 # Dependencies are provided by tests/qemu/shell.nix (recommended) or PATH.
 # Needs: qemu-system-x86_64, busybox (static), mke2fs, cpio, and a Rust
@@ -41,6 +40,11 @@ fi
 
 # --- Resolve kernel ---
 find_kernel() {
+    # Prefer Nix-provided kernel (from shell.nix)
+    if [[ -n "${QEMU_KERNEL:-}" && -f "$QEMU_KERNEL" ]]; then
+        echo "$QEMU_KERNEL"
+        return
+    fi
     if [[ -n "${KERNEL:-}" ]]; then
         echo "$KERNEL"
         return
@@ -63,6 +67,29 @@ find_kernel() {
 
 KERNEL_PATH="$(find_kernel)"
 echo "kernel: $KERNEL_PATH"
+
+# --- Resolve kernel modules ---
+find_modules_dir() {
+    # Prefer Nix-provided modules (from shell.nix)
+    if [[ -n "${QEMU_KERNEL_MODULES:-}" && -d "$QEMU_KERNEL_MODULES" ]]; then
+        echo "$QEMU_KERNEL_MODULES"
+        return
+    fi
+    # Try host system
+    local kver
+    kver="$(uname -r)"
+    for d in "/run/current-system/kernel-modules/lib/modules/$kver" "/lib/modules/$kver"; do
+        [[ -d "$d" ]] && echo "$d" && return
+    done
+    echo ""
+}
+
+MODULES_DIR="$(find_modules_dir)"
+if [[ -n "$MODULES_DIR" ]]; then
+    echo "modules: $MODULES_DIR"
+else
+    echo "warning: no kernel modules dir found, QEMU may not have ext4/virtio" >&2
+fi
 
 # --- Build kexec-menu ---
 if ! $SKIP_BUILD; then
@@ -99,13 +126,61 @@ mkdir -p "$INITRD_DIR"/{bin,dev,proc,sys,mnt,run,etc}
 
 BUSYBOX="$(command -v busybox)"
 cp "$BUSYBOX" "$INITRD_DIR/bin/busybox"
-for cmd in sh mount umount mkdir ls cat sleep poweroff reboot; do
+for cmd in sh mount umount mkdir ls cat sleep poweroff reboot insmod modprobe; do
     ln -sf busybox "$INITRD_DIR/bin/$cmd"
 done
 
 cp "$BINARY" "$INITRD_DIR/bin/kexec-menu"
 cp "$REPO_ROOT/tests/qemu/init.sh" "$INITRD_DIR/init"
 chmod +x "$INITRD_DIR/init"
+
+# --- Include kernel modules in initrd ---
+if [[ -n "$MODULES_DIR" ]]; then
+    # Modules needed for virtio block device + ext4
+    NEEDED_MODULES=(
+        # virtio core
+        "drivers/virtio/virtio.ko"
+        "drivers/virtio/virtio_ring.ko"
+        "drivers/virtio/virtio_pci_modern_dev.ko"
+        "drivers/virtio/virtio_pci_legacy_dev.ko"
+        "drivers/virtio/virtio_pci.ko"
+        # virtio block
+        "drivers/block/virtio_blk.ko"
+        # ext4 dependencies (crc16 path varies: lib/crc16.ko or lib/crc/crc16.ko)
+        "lib/crc16.ko"
+        "lib/crc/crc16.ko"
+        "crypto/crc32c_generic.ko"
+        "lib/libcrc32c.ko"
+        "fs/mbcache.ko"
+        "fs/jbd2/jbd2.ko"
+        # ext4
+        "fs/ext4/ext4.ko"
+    )
+
+    KMOD_DIR="$INITRD_DIR/lib/modules"
+    mkdir -p "$KMOD_DIR"
+    mod_count=0
+
+    for mod in "${NEEDED_MODULES[@]}"; do
+        src="$MODULES_DIR/kernel/$mod"
+        # Try with .xz, .zst, .gz compression
+        for ext in "" ".xz" ".zst" ".gz"; do
+            if [[ -f "${src}${ext}" ]]; then
+                dst="$KMOD_DIR/$(basename "$mod")"
+                case "$ext" in
+                    .xz)   xz -d -c "${src}${ext}" > "$dst" ;;
+                    .zst)  zstd -d -q "${src}${ext}" -o "$dst" ;;
+                    .gz)   gzip -d -c "${src}${ext}" > "$dst" ;;
+                    "")    cp "${src}" "$dst" ;;
+                esac
+                mod_count=$((mod_count + 1))
+                break
+            fi
+        done
+    done
+
+    echo "modules: $mod_count included in initrd"
+fi
 
 (cd "$INITRD_DIR" && find . | cpio -o -H newc --quiet) > "$INITRD"
 echo "initrd: $INITRD ($(stat -c%s "$INITRD") bytes)"
