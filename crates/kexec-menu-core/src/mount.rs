@@ -1,7 +1,7 @@
 // Block device enumeration, filesystem detection, and mounting.
 //
 // Reads sysfs and probes superblocks to discover mountable sources.
-// Uses libc for mount/umount syscalls. All mounts are read-only.
+// Uses libc for mount syscalls. All mounts are read-only.
 
 use std::ffi::CString;
 use std::fs;
@@ -296,19 +296,6 @@ pub fn mount_ro(dev: &Path, fstype: FsType) -> Result<PathBuf> {
     }
 
     Ok(mount_point)
-}
-
-/// Unmount a filesystem.
-pub fn umount(mount_point: &Path) -> Result<()> {
-    let c_target = path_to_cstring(mount_point)?;
-
-    let ret = unsafe { libc::umount(c_target.as_ptr()) };
-
-    if ret != 0 {
-        return Err(Error::Io(io::Error::last_os_error()));
-    }
-
-    Ok(())
 }
 
 fn path_to_cstring(p: &Path) -> Result<CString> {

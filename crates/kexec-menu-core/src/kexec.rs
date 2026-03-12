@@ -12,6 +12,12 @@ use std::path::{Path, PathBuf};
 
 use crate::types::{BootSelection, Error, Result};
 
+// kexec_file_load(2) syscall number
+#[cfg(target_arch = "x86_64")]
+const SYS_KEXEC_FILE_LOAD: libc::c_long = 320;
+#[cfg(target_arch = "aarch64")]
+const SYS_KEXEC_FILE_LOAD: libc::c_long = 294;
+
 // --- EFI variable persistence ---
 //
 // The boot selection (leaf_path, entry_name) is stored in an EFI variable
@@ -212,15 +218,6 @@ pub fn kexec_load(
     let c_cmdline = CString::new(cmdline)
         .map_err(|_| Error::Parse("cmdline contains NUL byte".into()))?;
 
-    // kexec_file_load(2):
-    //   int kexec_file_load(int kernel_fd, int initrd_fd, unsigned long cmdline_len,
-    //                       const char *cmdline, unsigned long flags);
-    // syscall number: 320 on x86_64, 294 on aarch64
-    #[cfg(target_arch = "x86_64")]
-    const SYS_KEXEC_FILE_LOAD: libc::c_long = 320;
-    #[cfg(target_arch = "aarch64")]
-    const SYS_KEXEC_FILE_LOAD: libc::c_long = 294;
-
     // We need to pass initrd as an fd. Write to a memfd.
     let initrd_fd = memfd_create("kexec-initrd")?;
     write_all_fd(initrd_fd, &initrd_data)?;
@@ -308,11 +305,6 @@ pub fn kexec_exec() -> Result<()> {
 /// (EFI stub kernels, bzImages).
 pub fn boot_file(kernel_path: &Path) -> Result<()> {
     let kernel_fd = fs::File::open(kernel_path)?;
-
-    #[cfg(target_arch = "x86_64")]
-    const SYS_KEXEC_FILE_LOAD: libc::c_long = 320;
-    #[cfg(target_arch = "aarch64")]
-    const SYS_KEXEC_FILE_LOAD: libc::c_long = 294;
 
     let cmdline = b"\0";
     let ret = unsafe {
