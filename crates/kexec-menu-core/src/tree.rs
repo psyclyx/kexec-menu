@@ -186,7 +186,12 @@ pub fn walk_boot_tree(root: &Path) -> Result<Vec<TreeNode>> {
             // This is a leaf
             let json = fs::read_to_string(&entries_json)?;
             let entries = parse_entries(&json)?;
-            nodes.push(TreeNode::Leaf(Leaf { path, entries }));
+            let mtime = fs::metadata(&path)?
+                .modified()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            nodes.push(TreeNode::Leaf(Leaf { path, entries, mtime }));
         } else {
             // Recurse; only include if it has children
             let children = walk_boot_tree(&path)?;

@@ -52,6 +52,8 @@ pub struct Entry {
 pub struct Leaf {
     pub path: PathBuf,
     pub entries: Vec<Entry>,
+    /// Modification time as seconds since UNIX epoch.
+    pub mtime: u64,
 }
 
 /// A node in the boot tree.
