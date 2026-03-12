@@ -176,7 +176,7 @@ in
   config = lib.mkIf cfg.enable {
     boot.loader.external = {
       enable = true;
-      installBootLoader = "${installer}/bin/kexec-menu-install";
+      installHook = "${installer}/bin/kexec-menu-install";
     };
   };
 }
