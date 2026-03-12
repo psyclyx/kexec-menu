@@ -3,16 +3,30 @@
 let
   cfg = config.boot.loader.kexec-menu;
 
-  copyCmd = {
-    copy = "cp";
-    reflink = "cp --reflink=auto";
-    snapshot = "cp --reflink=auto"; # snapshot handled separately
+  copyBlob = {
+    copy = ''
+      # Hash dedup: skip copy if destination already has identical content
+      copy_blob() {
+        local src="$1" dst="$2"
+        if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+          return
+        fi
+        cp "$src" "$dst"
+      }
+    '';
+    reflink = ''
+      copy_blob() {
+        cp --reflink=auto "$1" "$2"
+      }
+    '';
   }.${cfg.installStrategy};
 
   installer = pkgs.writeShellApplication {
     name = "kexec-menu-install";
     runtimeInputs = with pkgs; [ coreutils jq ];
     text = ''
+      ${copyBlob}
+
       toplevel="$1"
       boot_dir="${cfg.bootMountPoint}/nixos"
 
@@ -24,8 +38,8 @@ let
       mkdir -p "$leaf_dir"
 
       # Copy kernel and initrd
-      ${copyCmd} "$(readlink -f "$toplevel/kernel")" "$leaf_dir/vmlinuz"
-      ${copyCmd} "$(readlink -f "$toplevel/initrd")" "$leaf_dir/initrd"
+      copy_blob "$(readlink -f "$toplevel/kernel")" "$leaf_dir/vmlinuz"
+      copy_blob "$(readlink -f "$toplevel/initrd")" "$leaf_dir/initrd"
 
       # Read kernel cmdline
       cmdline="$(cat "$toplevel/kernel-params")"
@@ -45,8 +59,8 @@ let
           spec_kernel="vmlinuz-$spec_name"
           spec_initrd="initrd-$spec_name"
 
-          ${copyCmd} "$(readlink -f "$spec/kernel")" "$leaf_dir/$spec_kernel"
-          ${copyCmd} "$(readlink -f "$spec/initrd")" "$leaf_dir/$spec_initrd"
+          copy_blob "$(readlink -f "$spec/kernel")" "$leaf_dir/$spec_kernel"
+          copy_blob "$(readlink -f "$spec/initrd")" "$leaf_dir/$spec_initrd"
           spec_cmdline="$(cat "$spec/kernel-params")"
 
           entries="$(echo "$entries" | jq \
@@ -99,13 +113,12 @@ in
     };
 
     installStrategy = lib.mkOption {
-      type = lib.types.enum [ "copy" "reflink" "snapshot" ];
+      type = lib.types.enum [ "copy" "reflink" ];
       default = "copy";
       description = ''
         How kernel/initrd blobs are placed into leaf directories.
-        - copy: plain cp (works on any filesystem)
+        - copy: plain cp, skips identical files (works on any filesystem)
         - reflink: cp --reflink=auto (saves space on bcachefs/btrfs)
-        - snapshot: subvolume snapshot of previous leaf, overwrite changed files
       '';
     };
 

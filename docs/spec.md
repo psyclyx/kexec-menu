@@ -147,7 +147,7 @@ Responsibilities:
   - `$1/kernel`, `$1/initrd` copied into leaf as blobs
   - `$1/kernel-params` is cmdline for default entry
   - `$1/specialisation/<n>/` become additional entries in same leaf
-- Blob deduplication (hash-based, or reflinks on bcachefs) is installer's concern
+- Blob deduplication (content comparison or reflinks) is installer's concern
 - Prune old leaves past configurable retention
 - Optionally install UKI to a configured location — module option, not required
 - Adds stylix target if stylix is present
@@ -172,19 +172,19 @@ enhancement over the naive copy, not required for correctness.
 | Pruning old leaves | Installer script |
 | Installing UKI to ESP or elsewhere | NixOS module (optional) |
 
-### bcachefs installer strategies (NixOS module option)
+### Installer strategies (NixOS module option)
 
-Three modes, selected via module option:
+Two modes, selected via module option:
 
 - **copy** (default, works on any filesystem): copy blobs into new leaf,
-  deduplicate by hash (skip copy if destination already has identical content).
-- **reflink**: create new leaf dir, reflink blobs from previous leaf, then
-  overwrite only what has changed. Requires bcachefs. Saves space without
-  requiring subvolume layout assumptions.
-- **snapshot**: snapshot the previous leaf subvolume to create the new leaf,
-  then overwrite changed files. Requires bcachefs with leaves as subvolumes.
-  Most efficient. Assumes the user has structured their boot tree leaves as
-  bcachefs subvolumes — document this clearly; it is not required.
+  deduplicate by content (skip copy if destination already has identical
+  content via `cmp -s`).
+- **reflink**: create new leaf dir, reflink blobs from previous leaf.
+  Saves space on bcachefs/btrfs without requiring subvolume layout
+  assumptions.
 
 The UKI is unaffected by which strategy is used. The on-disk result is
 identical from the UKI's perspective.
+
+Future: a snapshot strategy (bcachefs subvolume snapshots) could further
+optimize space usage but is not yet implemented.
