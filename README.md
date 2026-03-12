@@ -23,18 +23,54 @@ Without Nix (requires Rust toolchain + musl targets):
 
 ## Testing
 
-    cargo test                 # unit tests (135 tests)
-    make test                  # unit tests via Makefile
+    cargo test --workspace      # unit tests (135 tests)
+    make test                   # unit tests via Makefile
 
-QEMU integration test (requires nix-shell):
+QEMU integration tests (boots a VM, mounts ext4/btrfs/LUKS, runs the menu):
 
-    cd tests/qemu && nix-shell --run ./integration-test.sh
+    $(nix-build -A tests.qemu)  # build deps and run
+
+NixOS module VM tests (installer layout, specialisations, pruning, dedup, UKI install):
+
+    nix-build -A tests.installer
 
 ## Usage
 
     kexec-menu                 # normal boot menu
     kexec-menu --dry-run       # standalone mode: print selection instead of kexec
     kexec-menu --auto-default  # skip TUI, boot default entry directly
+
+## NixOS Module
+
+Import `modules/nixos.nix` and enable it:
+
+```nix
+{ imports = [ kexec-menu.modules.nixos ]; }
+
+{
+  boot.loader.kexec-menu = {
+    enable = true;
+    package = kexec-menu-uki;  # your built UKI package
+  };
+}
+```
+
+### Options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `enable` | bool | `false` | Enable the kexec-menu bootloader |
+| `package` | package | — | The kexec-menu UKI package |
+| `bootMountPoint` | string | `"/boot"` | Where boot entries are written |
+| `retention` | positive int | `10` | Number of generations to keep |
+| `installStrategy` | `"copy"` or `"reflink"` | `"copy"` | How blobs are placed. `copy` skips identical files (any fs). `reflink` uses `cp --reflink=auto` (saves space on bcachefs/btrfs). |
+| `ukiInstallPath` | null or string | `null` | If set, copy the UKI to this path on each rebuild |
+| `theme` | null or attrs | `null` | Base16 hex colorscheme. Auto-detected from Stylix if present. |
+
+The module hooks into `boot.loader.external` — each `nixos-rebuild` runs the
+installer, which copies kernel/initrd/entries.json into a generation leaf
+directory under `<bootMountPoint>/nixos/` and prunes old generations beyond
+the retention count. Specialisations are included as additional entries.
 
 ## Spec
 
