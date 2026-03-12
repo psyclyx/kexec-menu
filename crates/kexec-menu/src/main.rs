@@ -88,6 +88,16 @@ fn run(dry_run: bool) -> Result<(), Box<dyn std::fmt::Display>> {
                 Ok(())
             }
         }
+        Ok(TuiResult::BootFile { path }) => {
+            if dry_run {
+                eprintln!("kexec-menu: would boot file:");
+                eprintln!("  path: {}", path.display());
+                Ok(())
+            } else {
+                kexec::boot_file(&path).map_err(boxed)?;
+                Ok(())
+            }
+        }
         Err(e) => Err(boxed(e)),
     }
 }
@@ -101,6 +111,9 @@ enum TuiResult {
     Boot {
         leaf_path: PathBuf,
         entry: kexec_menu_core::types::Entry,
+    },
+    BootFile {
+        path: PathBuf,
     },
 }
 
@@ -246,6 +259,10 @@ fn run_tui(
                 source_idx, source_label, current_dir, root, menu, dir_entries,
             } => {
                 match tui::handle_file_browser_key(menu, dir_entries, current_dir, root, &key) {
+                    tui::Action::BootFile { path } => {
+                        cleanup(&mut output)?;
+                        return Ok(TuiResult::BootFile { path });
+                    }
                     tui::Action::OpenDir(idx) => {
                         if let Some(entry) = dir_entries.get(idx) {
                             let new_dir = entry.path.clone();

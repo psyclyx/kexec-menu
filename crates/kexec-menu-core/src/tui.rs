@@ -184,6 +184,7 @@ pub enum Screen {
 pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
+    pub is_bootable: bool,
     pub path: std::path::PathBuf,
 }
 
@@ -577,6 +578,8 @@ pub enum Action {
     OpenDir(usize),
     /// Go up one directory in the file browser.
     DirUp,
+    /// Boot a file directly from the file browser (kexec a bare kernel).
+    BootFile { path: std::path::PathBuf },
 }
 
 /// Handle a key press on a source list screen.
@@ -644,6 +647,35 @@ pub fn handle_entry_key(
     }
 }
 
+// --- Bootable file detection ---
+
+/// Check if a file is a bootable kernel image (PE/EFI stub or bzImage).
+///
+/// Reads the first 518 bytes and checks:
+/// - PE/EFI: starts with "MZ" (0x4D 0x5A)
+/// - bzImage: has "HdrS" (0x48 0x64 0x72 0x53) at offset 0x202
+pub fn is_bootable_file(path: &std::path::Path) -> bool {
+    use std::io::Read as _;
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut buf = [0u8; 518];
+    let n = match f.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    if n >= 2 && buf[0] == 0x4D && buf[1] == 0x5A {
+        return true; // PE/EFI binary
+    }
+    if n >= 0x206 && buf[0x202] == b'H' && buf[0x203] == b'd'
+        && buf[0x204] == b'r' && buf[0x205] == b'S'
+    {
+        return true; // bzImage
+    }
+    false
+}
+
 // --- File browser ---
 
 /// List directory contents and build a menu for the file browser.
@@ -656,10 +688,14 @@ pub fn build_file_menu(dir: &std::path::Path) -> io::Result<(Menu, Vec<DirEntry>
     for de in read_dir {
         let name = de.file_name().to_string_lossy().into_owned();
         let ft = de.file_type()?;
+        let is_dir = ft.is_dir();
+        let path = de.path();
+        let is_bootable = !is_dir && is_bootable_file(&path);
         entries.push(DirEntry {
             name,
-            is_dir: ft.is_dir(),
-            path: de.path(),
+            is_dir,
+            is_bootable,
+            path,
         });
     }
 
@@ -671,7 +707,7 @@ pub fn build_file_menu(dir: &std::path::Path) -> io::Result<(Menu, Vec<DirEntry>
             } else {
                 e.name.clone()
             },
-            detail: String::new(),
+            detail: if e.is_bootable { "[bootable]".into() } else { String::new() },
             state: ItemState::Normal,
         })
         .collect();
@@ -721,6 +757,8 @@ pub fn handle_file_browser_key(
             if let Some(entry) = dir_entries.get(idx) {
                 if entry.is_dir {
                     Action::OpenDir(idx)
+                } else if entry.is_bootable {
+                    Action::BootFile { path: entry.path.clone() }
                 } else {
                     Action::None
                 }
@@ -1133,6 +1171,7 @@ mod tests {
         let entries = vec![DirEntry {
             name: "subdir".into(),
             is_dir: true,
+            is_bootable: false,
             path: PathBuf::from("/mnt/subdir"),
         }];
         let items = vec![MenuItem {
@@ -1152,6 +1191,7 @@ mod tests {
         let entries = vec![DirEntry {
             name: "file.txt".into(),
             is_dir: false,
+            is_bootable: false,
             path: PathBuf::from("/mnt/file.txt"),
         }];
         let items = vec![MenuItem {
@@ -1224,6 +1264,102 @@ mod tests {
         render_file_browser(&mut buf, "disk", &root, &root, &menu).unwrap();
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("/"));
+    }
+
+    // --- Bootable file detection tests ---
+
+    #[test]
+    fn detect_pe_binary() {
+        let tmp = make_tempdir();
+        let path = tmp.join("test.efi");
+        let mut data = vec![0u8; 64];
+        data[0] = 0x4D; // 'M'
+        data[1] = 0x5A; // 'Z'
+        std::fs::write(&path, &data).unwrap();
+        assert!(is_bootable_file(&path));
+    }
+
+    #[test]
+    fn detect_bzimage() {
+        let tmp = make_tempdir();
+        let path = tmp.join("vmlinuz");
+        let mut data = vec![0u8; 0x206];
+        data[0x202] = b'H';
+        data[0x203] = b'd';
+        data[0x204] = b'r';
+        data[0x205] = b'S';
+        std::fs::write(&path, &data).unwrap();
+        assert!(is_bootable_file(&path));
+    }
+
+    #[test]
+    fn detect_non_bootable() {
+        let tmp = make_tempdir();
+        let path = tmp.join("readme.txt");
+        std::fs::write(&path, "hello world").unwrap();
+        assert!(!is_bootable_file(&path));
+    }
+
+    #[test]
+    fn detect_empty_file() {
+        let tmp = make_tempdir();
+        let path = tmp.join("empty");
+        std::fs::write(&path, b"").unwrap();
+        assert!(!is_bootable_file(&path));
+    }
+
+    #[test]
+    fn detect_too_small_for_bzimage() {
+        let tmp = make_tempdir();
+        let path = tmp.join("small");
+        std::fs::write(&path, &[0u8; 100]).unwrap();
+        assert!(!is_bootable_file(&path));
+    }
+
+    #[test]
+    fn detect_nonexistent_file() {
+        assert!(!is_bootable_file(std::path::Path::new("/nonexistent/path")));
+    }
+
+    #[test]
+    fn file_browser_enter_on_bootable_boots() {
+        let entries = vec![DirEntry {
+            name: "vmlinuz".into(),
+            is_dir: false,
+            is_bootable: true,
+            path: PathBuf::from("/mnt/boot/vmlinuz"),
+        }];
+        let items = vec![MenuItem {
+            label: "vmlinuz".into(),
+            detail: "[bootable]".into(),
+            state: ItemState::Normal,
+        }];
+        let mut menu = Menu::new(items, None);
+        let root = PathBuf::from("/mnt");
+        let current = PathBuf::from("/mnt/boot");
+        let action = handle_file_browser_key(&mut menu, &entries, &current, &root, &Key::Enter);
+        match action {
+            Action::BootFile { path } => assert_eq!(path, PathBuf::from("/mnt/boot/vmlinuz")),
+            _ => panic!("expected BootFile action"),
+        }
+    }
+
+    #[test]
+    fn build_file_menu_marks_bootable() {
+        let tmp = make_tempdir();
+        // Create a PE file
+        let mut pe_data = vec![0u8; 64];
+        pe_data[0] = 0x4D;
+        pe_data[1] = 0x5A;
+        std::fs::write(tmp.join("kernel.efi"), &pe_data).unwrap();
+        // Create a normal file
+        std::fs::write(tmp.join("readme.txt"), "hello").unwrap();
+
+        let (_menu, entries) = build_file_menu(&tmp).unwrap();
+        let efi = entries.iter().find(|e| e.name == "kernel.efi").unwrap();
+        let txt = entries.iter().find(|e| e.name == "readme.txt").unwrap();
+        assert!(efi.is_bootable);
+        assert!(!txt.is_bootable);
     }
 
     #[test]

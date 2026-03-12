@@ -303,6 +303,37 @@ pub fn kexec_exec() -> Result<()> {
 
 // --- High-level API ---
 
+/// Load and boot a bare kernel file directly via kexec (no initrd, no cmdline).
+///
+/// Used for directly bootable files found in the filesystem browser
+/// (EFI stub kernels, bzImages).
+pub fn boot_file(kernel_path: &Path) -> Result<()> {
+    let kernel_fd = fs::File::open(kernel_path)?;
+
+    #[cfg(target_arch = "x86_64")]
+    const SYS_KEXEC_FILE_LOAD: libc::c_long = 320;
+    #[cfg(target_arch = "aarch64")]
+    const SYS_KEXEC_FILE_LOAD: libc::c_long = 294;
+
+    let cmdline = b"\0";
+    let ret = unsafe {
+        libc::syscall(
+            SYS_KEXEC_FILE_LOAD,
+            kernel_fd.as_raw_fd() as libc::c_long,
+            -1i64 as libc::c_long, // no initrd
+            cmdline.len() as libc::c_ulong,
+            cmdline.as_ptr(),
+            0u64, // flags
+        )
+    };
+
+    if ret != 0 {
+        return Err(Error::Io(io::Error::last_os_error()));
+    }
+
+    kexec_exec()
+}
+
 /// Execute a boot entry: load kernel via kexec, save selection, trigger reboot.
 ///
 /// `leaf_path`: path to the leaf directory containing kernel/initrd
