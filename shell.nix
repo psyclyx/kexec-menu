@@ -41,6 +41,9 @@ pkgs.mkShell {
   # Static busybox for initrd (the one in PATH may be dynamically linked)
   BUSYBOX_STATIC = "${pkgs.pkgsStatic.busybox}/bin/busybox";
 
+  # Static cryptsetup for LUKS testing in QEMU initrd
+  CRYPTSETUP_STATIC = "${pkgs.pkgsStatic.cryptsetup}/bin/cryptsetup";
+
   shellHook = ''
     echo "kexec-menu dev shell"
     echo "  cargo target: x86_64-unknown-linux-musl (static)"

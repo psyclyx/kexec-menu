@@ -8,11 +8,11 @@
 let
   sources = import ../../npins;
   pkgs = import sources.nixpkgs {};
-  musl64 = pkgs.pkgsCross.musl64;
   kernel = pkgs.linuxPackages.kernel;
-  kexec-menu = musl64.callPackage ../../package.nix {
+  kexec-menu = pkgs.pkgsStatic.callPackage ../../package.nix {
     target = "x86_64-unknown-linux-musl";
   };
+  cryptsetupStatic = pkgs.pkgsStatic.cryptsetup;
 in
 pkgs.writeShellApplication {
   name = "qemu-integration-test";
@@ -28,6 +28,7 @@ pkgs.writeShellApplication {
     pkgs.zstd
     pkgs.xz
     pkgs.gzip
+    pkgs.kmod
   ];
 
   text = ''
@@ -45,7 +46,7 @@ pkgs.writeShellApplication {
     trap 'rm -rf "$BUILD_DIR"' EXIT
 
     BINARY="${kexec-menu}/bin/kexec-menu"
-    TIMEOUT_SECS=30
+    TIMEOUT_SECS=60
 
     echo "binary: $BINARY"
     echo "kernel: $QEMU_KERNEL"
@@ -57,9 +58,9 @@ pkgs.writeShellApplication {
     # Empty 64MB disk — formatted as btrfs inside QEMU by init-test.sh
     BTRFS_DISK="$BUILD_DIR/test-disk.raw"
     truncate -s 64M "$BTRFS_DISK"
-    # Empty 16MB disk — LUKS magic written inside QEMU by init-test.sh
+    # Empty 64MB disk — formatted as LUKS+ext4 inside QEMU by init-test.sh
     LUKS_DISK="$BUILD_DIR/test-disk-luks.raw"
-    truncate -s 16M "$LUKS_DISK"
+    truncate -s 64M "$LUKS_DISK"
 
     # --- Create initrd ---
     INITRD="$BUILD_DIR/initrd-test.cpio"
@@ -67,16 +68,17 @@ pkgs.writeShellApplication {
     mkdir -p "$INITRD_DIR"/{bin,dev,proc,sys,mnt,run,etc,tmp}
 
     cp "$BUSYBOX_STATIC" "$INITRD_DIR/bin/busybox"
-    for cmd in sh mount umount mkdir ls cat sleep poweroff insmod grep; do
+    for cmd in sh mount umount mkdir ls cat sleep poweroff insmod grep echo printf dd mke2fs modprobe depmod; do
         ln -sf busybox "$INITRD_DIR/bin/$cmd"
     done
 
     cp "$BINARY" "$INITRD_DIR/bin/kexec-menu"
     cp "${pkgs.pkgsStatic.btrfs-progs}/bin/mkfs.btrfs" "$INITRD_DIR/bin/mkfs.btrfs"
+    cp "${cryptsetupStatic}/bin/cryptsetup" "$INITRD_DIR/bin/cryptsetup"
     cp "$REPO_ROOT/tests/qemu/init-test.sh" "$INITRD_DIR/init"
     chmod +x "$INITRD_DIR/init"
 
-    # --- Include kernel modules ---
+    # --- Include kernel modules (preserving directory structure for modprobe) ---
     NEEDED_MODULES=(
         "drivers/virtio/virtio_ring.ko"
         "drivers/virtio/virtio.ko"
@@ -94,16 +96,30 @@ pkgs.writeShellApplication {
         "crypto/xor.ko"
         "lib/raid6/raid6_pq.ko"
         "fs/btrfs/btrfs.ko"
+        # dm-crypt (for LUKS) and dependency chain
+        "drivers/dax/dax.ko"
+        "drivers/md/dm-mod.ko"
+        "lib/asn1_encoder.ko"
+        "drivers/tee/tee.ko"
+        "security/keys/trusted-keys/trusted.ko"
+        "security/keys/encrypted-keys/encrypted-keys.ko"
+        "drivers/md/dm-crypt.ko"
+        # crypto (for dm-crypt runtime)
+        "crypto/xts.ko"
+        "crypto/cryptd.ko"
+        "arch/x86/crypto/aesni-intel.ko"
     )
 
-    KMOD_DIR="$INITRD_DIR/lib/modules"
-    mkdir -p "$KMOD_DIR"
+    KMOD_BASE="$INITRD_DIR/lib/modules/${kernel.modDirVersion}"
+    mkdir -p "$KMOD_BASE/kernel"
 
     for mod in "''${NEEDED_MODULES[@]}"; do
         src="$QEMU_KERNEL_MODULES/kernel/$mod"
         for ext in "" ".xz" ".zst" ".gz"; do
             if [[ -f "''${src}''${ext}" ]]; then
-                dst="$KMOD_DIR/$(basename "$mod")"
+                dst_dir="$KMOD_BASE/kernel/$(dirname "$mod")"
+                mkdir -p "$dst_dir"
+                dst="$dst_dir/$(basename "$mod")"
                 case "$ext" in
                     .xz)   xz -d -c "''${src}''${ext}" > "$dst" ;;
                     .zst)  zstd -d -q "''${src}''${ext}" -o "$dst" ;;
@@ -114,6 +130,9 @@ pkgs.writeShellApplication {
             fi
         done
     done
+
+    # Generate modules.dep for modprobe
+    depmod -b "$INITRD_DIR" "${kernel.modDirVersion}"
 
     (cd "$INITRD_DIR" && find . | cpio -o -H newc --quiet) > "$INITRD"
 
@@ -129,6 +148,7 @@ pkgs.writeShellApplication {
             -drive "file=$DISK,format=raw,if=virtio,readonly=on" \
             -drive "file=$BTRFS_DISK,format=raw,if=virtio" \
             -drive "file=$LUKS_DISK,format=raw,if=virtio" \
+            -cpu max \
             -m 256M \
             -nographic \
             -no-reboot \
@@ -141,12 +161,12 @@ pkgs.writeShellApplication {
     elif grep -q "TEST_RESULT=FAIL" "$OUTPUT_FILE"; then
         echo "FAIL: integration test failed"
         echo "--- output ---"
-        tail -30 "$OUTPUT_FILE"
+        tail -50 "$OUTPUT_FILE"
         exit 1
     else
         echo "FAIL: test did not complete (timeout or crash)"
         echo "--- output ---"
-        tail -30 "$OUTPUT_FILE"
+        tail -50 "$OUTPUT_FILE"
         exit 1
     fi
   '';

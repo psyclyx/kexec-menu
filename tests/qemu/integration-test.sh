@@ -13,7 +13,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD_DIR="$REPO_ROOT/target/qemu-test"
 TARGET=x86_64-unknown-linux-musl
-TIMEOUT_SECS=30
+TIMEOUT_SECS=60
 
 SKIP_BUILD=false
 for arg in "$@"; do
@@ -73,8 +73,8 @@ trap cleanup_disks EXIT
 "$REPO_ROOT/tests/qemu/create-test-disk.sh" "$DISK"
 # Empty 64MB disk — formatted as btrfs inside QEMU by init-test.sh
 truncate -s 64M "$BTRFS_DISK"
-# Empty 16MB disk — LUKS magic written inside QEMU by init-test.sh
-truncate -s 16M "$LUKS_DISK"
+# Empty 64MB disk — formatted as LUKS+ext4 inside QEMU by init-test.sh
+truncate -s 64M "$LUKS_DISK"
 
 # --- Create initrd (with test init) ---
 INITRD="$BUILD_DIR/initrd-test.cpio"
@@ -88,7 +88,7 @@ else
     BUSYBOX="$(command -v busybox)"
 fi
 cp "$BUSYBOX" "$INITRD_DIR/bin/busybox"
-for cmd in sh mount umount mkdir ls cat sleep poweroff insmod grep; do
+for cmd in sh mount umount mkdir ls cat sleep poweroff insmod grep echo printf dd mke2fs modprobe depmod; do
     ln -sf busybox "$INITRD_DIR/bin/$cmd"
 done
 
@@ -96,10 +96,14 @@ cp "$BINARY" "$INITRD_DIR/bin/kexec-menu"
 if [[ -n "${MKFS_BTRFS_STATIC:-}" && -f "$MKFS_BTRFS_STATIC" ]]; then
     cp "$MKFS_BTRFS_STATIC" "$INITRD_DIR/bin/mkfs.btrfs"
 fi
+if [[ -n "${CRYPTSETUP_STATIC:-}" && -f "$CRYPTSETUP_STATIC" ]]; then
+    cp "$CRYPTSETUP_STATIC" "$INITRD_DIR/bin/cryptsetup"
+fi
 cp "$REPO_ROOT/tests/qemu/init-test.sh" "$INITRD_DIR/init"
 chmod +x "$INITRD_DIR/init"
 
-# --- Include kernel modules ---
+# --- Include kernel modules (preserving directory structure for modprobe) ---
+KVER="$(basename "$MODULES_DIR")"
 NEEDED_MODULES=(
     "drivers/virtio/virtio_ring.ko"
     "drivers/virtio/virtio.ko"
@@ -117,16 +121,30 @@ NEEDED_MODULES=(
     "crypto/xor.ko"
     "lib/raid6/raid6_pq.ko"
     "fs/btrfs/btrfs.ko"
+    # dm-crypt (for LUKS) and dependency chain
+    "drivers/dax/dax.ko"
+    "drivers/md/dm-mod.ko"
+    "lib/asn1_encoder.ko"
+    "drivers/tee/tee.ko"
+    "security/keys/trusted-keys/trusted.ko"
+    "security/keys/encrypted-keys/encrypted-keys.ko"
+    "drivers/md/dm-crypt.ko"
+    # crypto (for dm-crypt runtime)
+    "crypto/xts.ko"
+    "crypto/cryptd.ko"
+    "arch/x86/crypto/aesni-intel.ko"
 )
 
-KMOD_DIR="$INITRD_DIR/lib/modules"
-mkdir -p "$KMOD_DIR"
+KMOD_BASE="$INITRD_DIR/lib/modules/$KVER"
+mkdir -p "$KMOD_BASE/kernel"
 
 for mod in "${NEEDED_MODULES[@]}"; do
     src="$MODULES_DIR/kernel/$mod"
     for ext in "" ".xz" ".zst" ".gz"; do
         if [[ -f "${src}${ext}" ]]; then
-            dst="$KMOD_DIR/$(basename "$mod")"
+            dst_dir="$KMOD_BASE/kernel/$(dirname "$mod")"
+            mkdir -p "$dst_dir"
+            dst="$dst_dir/$(basename "$mod")"
             case "$ext" in
                 .xz)   xz -d -c "${src}${ext}" > "$dst" ;;
                 .zst)  zstd -d -q "${src}${ext}" -o "$dst" ;;
@@ -137,6 +155,9 @@ for mod in "${NEEDED_MODULES[@]}"; do
         fi
     done
 done
+
+# Generate modules.dep for modprobe
+depmod -b "$INITRD_DIR" "$KVER"
 
 (cd "$INITRD_DIR" && find . | cpio -o -H newc --quiet) > "$INITRD"
 
@@ -152,6 +173,7 @@ timeout "$TIMEOUT_SECS" \
         -drive "file=$DISK,format=raw,if=virtio,readonly=on" \
         -drive "file=$BTRFS_DISK,format=raw,if=virtio" \
         -drive "file=$LUKS_DISK,format=raw,if=virtio" \
+        -cpu max \
         -m 256M \
         -nographic \
         -no-reboot \

@@ -6,7 +6,7 @@
 # Expects:
 #   /dev/vda — pre-formatted ext4 disk with boot tree (read-only)
 #   /dev/vdb — empty raw disk, formatted as btrfs here (if mkfs.btrfs present)
-#   /dev/vdc — empty raw disk, LUKS magic bytes written here (detected as encrypted)
+#   /dev/vdc — empty raw disk, formatted as LUKS+ext4 here (if cryptsetup present)
 #
 
 export PATH=/bin
@@ -19,7 +19,7 @@ echo ""
 echo "=== kexec-menu integration test ==="
 echo ""
 
-# Load kernel modules
+# Load kernel modules via modprobe (handles dependencies automatically)
 if [ -d /lib/modules ]; then
     echo "loading kernel modules..."
     for mod in \
@@ -28,16 +28,13 @@ if [ -d /lib/modules ]; then
         virtio_blk \
         crc16 crc32c-cryptoapi mbcache jbd2 \
         ext4 \
-        xor raid6_pq btrfs; do
-        ko="/lib/modules/${mod}.ko"
-        if [ -f "$ko" ]; then
-            if insmod "$ko"; then
-                echo "  loaded: $mod"
-            else
-                echo "  FAILED: $mod (exit $?)"
-            fi
+        xor raid6_pq btrfs \
+        cryptd aesni-intel xts \
+        dm-crypt; do
+        if modprobe "$mod" 2>/dev/null; then
+            echo "  loaded: $mod"
         else
-            echo "  skip: $mod (not found)"
+            echo "  skip: $mod"
         fi
     done
     echo "modules done, waiting for devices..."
@@ -73,11 +70,60 @@ elif [ -b /dev/vdb ]; then
     echo "  skip: btrfs setup (mkfs.btrfs not found)"
 fi
 
-# Write LUKS magic bytes to /dev/vdc so kexec-menu detects it as encrypted
+# Set up LUKS+ext4 test disk on /dev/vdc if cryptsetup is available
 LUKS_SETUP=false
-if [ -b /dev/vdc ]; then
-    echo "writing LUKS magic header to /dev/vdc..."
-    # LUKS magic: "LUKS\xba\xbe" (6 bytes at offset 0)
+LUKS_PASSPHRASE="test-passphrase"
+if [ -b /dev/vdc ] && [ -x /bin/cryptsetup ]; then
+    echo "setting up LUKS+ext4 test disk on /dev/vdc..."
+
+    # Create /dev/mapper if needed (devtmpfs may not have it)
+    mkdir -p /dev/mapper
+
+    # Format as LUKS with a known passphrase (use pbkdf2 for speed in tests)
+    if echo -n "$LUKS_PASSPHRASE" | cryptsetup luksFormat \
+            --type luks2 --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
+            --batch-mode /dev/vdc; then
+        echo "  LUKS formatted"
+
+        # Open the LUKS container
+        if echo -n "$LUKS_PASSPHRASE" | cryptsetup open --type luks \
+                --key-file - /dev/vdc test-luks; then
+            echo "  LUKS opened as /dev/mapper/test-luks"
+
+            # Format inner device as ext4 and populate with boot entries
+            if mke2fs -F -L "test-luks-inner" /dev/mapper/test-luks 2>/dev/null; then
+                mkdir -p /mnt/luks
+                if mount -t ext4 /dev/mapper/test-luks /mnt/luks; then
+                    mkdir -p /mnt/luks/boot/nixos/generation-1
+                    echo "DUMMY KERNEL" > /mnt/luks/boot/nixos/generation-1/vmlinuz
+                    echo "DUMMY INITRD" > /mnt/luks/boot/nixos/generation-1/initrd
+                    cat > /mnt/luks/boot/nixos/generation-1/entries.json <<'JSON'
+[
+  {"name": "default", "kernel": "vmlinuz", "initrd": "initrd", "cmdline": "console=ttyS0 root=/dev/dm-0"}
+]
+JSON
+                    umount /mnt/luks
+                    # Close the LUKS volume so kexec-menu sees it as encrypted
+                    cryptsetup close test-luks
+                    LUKS_SETUP=true
+                    echo "  LUKS+ext4 disk ready (closed)"
+                else
+                    echo "  WARN: failed to mount ext4 inside LUKS"
+                    cryptsetup close test-luks
+                fi
+            else
+                echo "  WARN: mke2fs failed inside LUKS"
+                cryptsetup close test-luks
+            fi
+        else
+            echo "  WARN: cryptsetup open failed"
+        fi
+    else
+        echo "  WARN: cryptsetup luksFormat failed"
+    fi
+elif [ -b /dev/vdc ]; then
+    # Fallback: write LUKS magic bytes if cryptsetup not available
+    echo "writing LUKS magic header to /dev/vdc (no cryptsetup)..."
     printf 'LUKS\272\276' > /dev/vdc
     LUKS_SETUP=true
     echo "  LUKS magic written"
@@ -124,8 +170,7 @@ if [ "$BTRFS_SETUP" = true ]; then
     fi
 fi
 
-# If LUKS was set up, verify kexec-menu detected it but did NOT mount it
-# (LUKS sources are encrypted, so they should appear as locked, not mounted)
+# If LUKS was set up with cryptsetup, verify kexec-menu detected it as encrypted
 if [ "$LUKS_SETUP" = true ]; then
     if busybox grep -q "vdc" /proc/mounts 2>/dev/null; then
         echo "FAIL: LUKS device vdc should not be mounted (encrypted)"

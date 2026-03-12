@@ -87,8 +87,8 @@ trap cleanup_disks EXIT
 "$REPO_ROOT/tests/qemu/create-test-disk.sh" "$DISK"
 # Empty 64MB disk — formatted as btrfs inside QEMU by init.sh (if mkfs.btrfs present)
 truncate -s 64M "$BTRFS_DISK"
-# Empty 16MB disk — LUKS magic written inside QEMU by init.sh
-truncate -s 16M "$LUKS_DISK"
+# Empty 64MB disk — formatted as LUKS+ext4 inside QEMU by init.sh
+truncate -s 64M "$LUKS_DISK"
 
 # --- Create initrd ---
 INITRD="$BUILD_DIR/initrd.cpio"
@@ -102,49 +102,61 @@ else
     BUSYBOX="$(command -v busybox)"
 fi
 cp "$BUSYBOX" "$INITRD_DIR/bin/busybox"
-for cmd in sh mount umount mkdir ls cat sleep poweroff reboot insmod modprobe; do
+for cmd in sh mount umount mkdir ls cat sleep poweroff reboot insmod modprobe depmod mke2fs; do
     ln -sf busybox "$INITRD_DIR/bin/$cmd"
 done
 
 cp "$BINARY" "$INITRD_DIR/bin/kexec-menu"
+if [[ -n "${CRYPTSETUP_STATIC:-}" && -f "$CRYPTSETUP_STATIC" ]]; then
+    cp "$CRYPTSETUP_STATIC" "$INITRD_DIR/bin/cryptsetup"
+fi
 cp "$REPO_ROOT/tests/qemu/init.sh" "$INITRD_DIR/init"
 chmod +x "$INITRD_DIR/init"
 
-# --- Include kernel modules in initrd ---
-# Modules needed for virtio block device + ext4
+# --- Include kernel modules (preserving directory structure for modprobe) ---
+KVER="$(basename "$MODULES_DIR")"
 NEEDED_MODULES=(
-    # virtio core (ring before virtio — virtio.ko depends on virtio_ring)
     "drivers/virtio/virtio_ring.ko"
     "drivers/virtio/virtio.ko"
     "drivers/virtio/virtio_pci_modern_dev.ko"
     "drivers/virtio/virtio_pci_legacy_dev.ko"
     "drivers/virtio/virtio_pci.ko"
-    # virtio block
     "drivers/block/virtio_blk.ko"
-    # ext4 dependencies (crc16 path varies: lib/crc16.ko or lib/crc/crc16.ko)
     "lib/crc16.ko"
     "lib/crc/crc16.ko"
     "crypto/crc32c-cryptoapi.ko"
     "fs/mbcache.ko"
     "fs/jbd2/jbd2.ko"
-    # ext4
     "fs/ext4/ext4.ko"
     # btrfs
     "crypto/xor.ko"
     "lib/raid6/raid6_pq.ko"
     "fs/btrfs/btrfs.ko"
+    # dm-crypt (for LUKS) and dependency chain
+    "drivers/dax/dax.ko"
+    "drivers/md/dm-mod.ko"
+    "lib/asn1_encoder.ko"
+    "drivers/tee/tee.ko"
+    "security/keys/trusted-keys/trusted.ko"
+    "security/keys/encrypted-keys/encrypted-keys.ko"
+    "drivers/md/dm-crypt.ko"
+    # crypto (for dm-crypt runtime)
+    "crypto/xts.ko"
+    "crypto/cryptd.ko"
+    "arch/x86/crypto/aesni-intel.ko"
 )
 
-KMOD_DIR="$INITRD_DIR/lib/modules"
-mkdir -p "$KMOD_DIR"
+KMOD_BASE="$INITRD_DIR/lib/modules/$KVER"
+mkdir -p "$KMOD_BASE/kernel"
 mod_count=0
 
 for mod in "${NEEDED_MODULES[@]}"; do
     src="$MODULES_DIR/kernel/$mod"
-    # Try with .xz, .zst, .gz compression
     for ext in "" ".xz" ".zst" ".gz"; do
         if [[ -f "${src}${ext}" ]]; then
-            dst="$KMOD_DIR/$(basename "$mod")"
+            dst_dir="$KMOD_BASE/kernel/$(dirname "$mod")"
+            mkdir -p "$dst_dir"
+            dst="$dst_dir/$(basename "$mod")"
             case "$ext" in
                 .xz)   xz -d -c "${src}${ext}" > "$dst" ;;
                 .zst)  zstd -d -q "${src}${ext}" -o "$dst" ;;
@@ -158,6 +170,9 @@ for mod in "${NEEDED_MODULES[@]}"; do
 done
 
 echo "modules: $mod_count included in initrd"
+
+# Generate modules.dep for modprobe
+depmod -b "$INITRD_DIR" "$KVER"
 
 (cd "$INITRD_DIR" && find . | cpio -o -H newc --quiet) > "$INITRD"
 echo "initrd: $INITRD ($(stat -c%s "$INITRD") bytes)"
@@ -175,6 +190,7 @@ qemu-system-x86_64 \
     -drive "file=$DISK,format=raw,if=virtio,readonly=on" \
     -drive "file=$BTRFS_DISK,format=raw,if=virtio" \
     -drive "file=$LUKS_DISK,format=raw,if=virtio" \
+    -cpu max \
     -m 256M \
     -nographic \
     -no-reboot
