@@ -1,0 +1,15 @@
+# agent working state — not part of the project
+prompt.md
+inbox/
+docs/archive/
+docs/scratch/
+
+# build artifacts
+result
+result-*
+*.o
+*.a
+target/
+
+# nix
+.direnv/
