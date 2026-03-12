@@ -12,14 +12,15 @@ use kexec_menu_core::types::{BootSelection, Source, SourceState, TreeNode};
 
 fn main() {
     let dry_run = std::env::args().any(|a| a == "--dry-run");
+    let auto_default = std::env::args().any(|a| a == "--auto-default");
 
-    if let Err(e) = run(dry_run) {
+    if let Err(e) = run(dry_run, auto_default) {
         eprintln!("kexec-menu: {e}");
         process::exit(1);
     }
 }
 
-fn run(dry_run: bool) -> Result<(), Box<dyn std::fmt::Display>> {
+fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Display>> {
     if dry_run {
         eprintln!("kexec-menu: dry-run mode");
     }
@@ -55,6 +56,11 @@ fn run(dry_run: bool) -> Result<(), Box<dyn std::fmt::Display>> {
     // Resolve default boot selection
     let efi_sel = kexec::read_efi_selection();
     let default = select::resolve_default(&trees, efi_sel.as_ref());
+
+    // --auto-default: skip TUI, boot the default entry directly
+    if auto_default {
+        return run_auto_default(dry_run, &trees, default.as_ref());
+    }
 
     // Enter TUI
     let stdin = io::stdin();
@@ -99,6 +105,42 @@ fn run(dry_run: bool) -> Result<(), Box<dyn std::fmt::Display>> {
             }
         }
         Err(e) => Err(boxed(e)),
+    }
+}
+
+fn run_auto_default(
+    dry_run: bool,
+    trees: &[(String, Vec<TreeNode>)],
+    default: Option<&BootSelection>,
+) -> Result<(), Box<dyn std::fmt::Display>> {
+    let sel = default.ok_or_else(|| boxed("no default entry found"))?;
+    let leaf = find_leaf(trees, &sel.leaf_path)
+        .ok_or_else(|| boxed("default leaf not found in tree"))?;
+    let entry = leaf
+        .entries
+        .iter()
+        .find(|e| e.name == sel.entry_name)
+        .ok_or_else(|| boxed("default entry not found in leaf"))?;
+
+    if dry_run {
+        eprintln!("kexec-menu: would boot:");
+        eprintln!("  leaf:    {}", sel.leaf_path.display());
+        eprintln!("  kernel:  {}", entry.kernel);
+        eprintln!("  initrd:  {}", entry.initrd);
+        eprintln!("  cmdline: {}", entry.cmdline);
+        eprintln!("  entry:   {}", entry.name);
+        Ok(())
+    } else {
+        kexec::boot_entry(
+            &sel.leaf_path,
+            &entry.kernel,
+            &entry.initrd,
+            &entry.cmdline,
+            &entry.name,
+            None,
+        )
+        .map_err(boxed)?;
+        Ok(())
     }
 }
 
