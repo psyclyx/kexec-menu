@@ -81,11 +81,14 @@ fi
 mkdir -p "$BUILD_DIR"
 DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.ext4")"
 BTRFS_DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.raw")"
-cleanup_disks() { rm -f "$DISK" "$BTRFS_DISK"; }
+LUKS_DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.raw")"
+cleanup_disks() { rm -f "$DISK" "$BTRFS_DISK" "$LUKS_DISK"; }
 trap cleanup_disks EXIT
 "$REPO_ROOT/tests/qemu/create-test-disk.sh" "$DISK"
 # Empty 64MB disk — formatted as btrfs inside QEMU by init.sh (if mkfs.btrfs present)
 truncate -s 64M "$BTRFS_DISK"
+# Empty 16MB disk — LUKS magic written inside QEMU by init.sh
+truncate -s 16M "$LUKS_DISK"
 
 # --- Create initrd ---
 INITRD="$BUILD_DIR/initrd.cpio"
@@ -171,6 +174,7 @@ qemu-system-x86_64 \
     -append "console=ttyS0 panic=-1" \
     -drive "file=$DISK,format=raw,if=virtio,readonly=on" \
     -drive "file=$BTRFS_DISK,format=raw,if=virtio" \
+    -drive "file=$LUKS_DISK,format=raw,if=virtio" \
     -m 256M \
     -nographic \
     -no-reboot

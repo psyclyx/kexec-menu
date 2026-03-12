@@ -6,6 +6,7 @@
 # Expects:
 #   /dev/vda — pre-formatted ext4 disk with boot tree (read-only)
 #   /dev/vdb — empty raw disk, formatted as btrfs here (if mkfs.btrfs present)
+#   /dev/vdc — empty raw disk, LUKS magic bytes written here (detected as encrypted)
 #
 
 export PATH=/bin
@@ -72,6 +73,16 @@ elif [ -b /dev/vdb ]; then
     echo "  skip: btrfs setup (mkfs.btrfs not found)"
 fi
 
+# Write LUKS magic bytes to /dev/vdc so kexec-menu detects it as encrypted
+LUKS_SETUP=false
+if [ -b /dev/vdc ]; then
+    echo "writing LUKS magic header to /dev/vdc..."
+    # LUKS magic: "LUKS\xba\xbe" (6 bytes at offset 0)
+    printf 'LUKS\272\276' > /dev/vdc
+    LUKS_SETUP=true
+    echo "  LUKS magic written"
+fi
+
 # Run kexec-menu in auto-default dry-run mode, capture stderr
 /bin/kexec-menu --dry-run --auto-default 2>/tmp/kexec-output
 STATUS=$?
@@ -110,6 +121,17 @@ if [ "$BTRFS_SETUP" = true ]; then
     else
         echo "FAIL: btrfs source not mounted (expected /mnt/kexec-menu/vdb)"
         PASS=false
+    fi
+fi
+
+# If LUKS was set up, verify kexec-menu detected it but did NOT mount it
+# (LUKS sources are encrypted, so they should appear as locked, not mounted)
+if [ "$LUKS_SETUP" = true ]; then
+    if busybox grep -q "vdc" /proc/mounts 2>/dev/null; then
+        echo "FAIL: LUKS device vdc should not be mounted (encrypted)"
+        PASS=false
+    else
+        echo "OK: LUKS source detected as encrypted (not mounted)"
     fi
 fi
 

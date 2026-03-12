@@ -57,6 +57,9 @@ pkgs.writeShellApplication {
     # Empty 64MB disk — formatted as btrfs inside QEMU by init-test.sh
     BTRFS_DISK="$BUILD_DIR/test-disk.raw"
     truncate -s 64M "$BTRFS_DISK"
+    # Empty 16MB disk — LUKS magic written inside QEMU by init-test.sh
+    LUKS_DISK="$BUILD_DIR/test-disk-luks.raw"
+    truncate -s 16M "$LUKS_DISK"
 
     # --- Create initrd ---
     INITRD="$BUILD_DIR/initrd-test.cpio"
@@ -125,6 +128,7 @@ pkgs.writeShellApplication {
             -append "console=ttyS0 panic=-1" \
             -drive "file=$DISK,format=raw,if=virtio,readonly=on" \
             -drive "file=$BTRFS_DISK,format=raw,if=virtio" \
+            -drive "file=$LUKS_DISK,format=raw,if=virtio" \
             -m 256M \
             -nographic \
             -no-reboot \

@@ -35,6 +35,12 @@ if [ -d /lib/modules ]; then
     sleep 1
 fi
 
+# Write LUKS magic bytes to /dev/vdc so kexec-menu detects it as encrypted
+if [ -b /dev/vdc ]; then
+    printf 'LUKS\272\276' > /dev/vdc
+    echo "LUKS magic written to /dev/vdc"
+fi
+
 # Show discovered block devices
 echo "Block devices:"
 ls -la /dev/vd* 2>/dev/null || echo "  (no virtio devices)"
