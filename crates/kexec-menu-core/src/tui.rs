@@ -15,6 +15,7 @@ pub enum Key {
     Down,
     Enter,
     Escape,
+    Backspace,
     Char(char),
     Unknown,
 }
@@ -40,6 +41,7 @@ pub fn read_key(input: &mut impl Read) -> io::Result<Key> {
             }
         }
         b'\r' | b'\n' => Ok(Key::Enter),
+        b'\x7f' | b'\x08' => Ok(Key::Backspace),
         b if b >= 0x20 && b < 0x7f => Ok(Key::Char(b as char)),
         _ => Ok(Key::Unknown),
     }
@@ -155,6 +157,13 @@ pub enum Screen {
         leaf_path: std::path::PathBuf,
         menu: Menu,
         entries: Vec<Entry>,
+    },
+    /// Passphrase prompt for an encrypted source.
+    Passphrase {
+        source_idx: usize,
+        source_label: String,
+        input: String,
+        error: Option<String>,
     },
 }
 
@@ -452,6 +461,73 @@ pub fn render_entries(
     )
 }
 
+/// Render the passphrase prompt screen.
+pub fn render_passphrase(
+    w: &mut impl Write,
+    source_label: &str,
+    input: &str,
+    error: Option<&str>,
+) -> io::Result<()> {
+    clear_screen(w)?;
+    move_cursor(w, 1, 1)?;
+
+    // Title bar
+    set_bold(w)?;
+    write!(w, " {TITLE}")?;
+    reset_style(w)?;
+    set_dim(w)?;
+    write!(w, " > {source_label}")?;
+    reset_style(w)?;
+    write!(w, "\r\n\r\n")?;
+
+    // Heading
+    set_bold(w)?;
+    write!(w, " Unlock Encrypted Source\r\n")?;
+    reset_style(w)?;
+    write!(w, "\r\n")?;
+
+    // Passphrase input with asterisk masking
+    write!(w, " Passphrase: ")?;
+    for _ in 0..input.len() {
+        write!(w, "*")?;
+    }
+    show_cursor(w)?;
+    write!(w, "\r\n")?;
+
+    if let Some(err) = error {
+        write!(w, "\r\n")?;
+        set_bold(w)?;
+        write!(w, " Error: ")?;
+        reset_style(w)?;
+        write!(w, "{err}\r\n")?;
+    }
+
+    // Hint bar
+    write!(w, "\r\n")?;
+    set_dim(w)?;
+    write!(w, " Enter submit  Esc cancel")?;
+    reset_style(w)?;
+
+    w.flush()
+}
+
+/// Handle a key press on the passphrase prompt screen.
+pub fn handle_passphrase_key(input: &mut String, key: &Key) -> Action {
+    match key {
+        Key::Char(c) => {
+            input.push(*c);
+            Action::Redraw
+        }
+        Key::Backspace => {
+            input.pop();
+            Action::Redraw
+        }
+        Key::Enter => Action::SubmitPassphrase,
+        Key::Escape => Action::Back,
+        _ => Action::None,
+    }
+}
+
 // --- Action ---
 
 /// Result of processing a key in the current screen.
@@ -470,6 +546,10 @@ pub enum Action {
     Back,
     /// Quit the menu.
     Quit,
+    /// Navigate to passphrase prompt for an encrypted source.
+    UnlockSource(usize),
+    /// Submit entered passphrase.
+    SubmitPassphrase,
 }
 
 /// Handle a key press on a source list screen.
@@ -480,7 +560,8 @@ pub fn handle_source_key(menu: &mut Menu, key: &Key) -> Action {
         Key::Enter => {
             let idx = menu.selected_index();
             match menu.items.get(idx).map(|i| &i.state) {
-                Some(ItemState::Error(_)) | Some(ItemState::Locked) => Action::None,
+                Some(ItemState::Error(_)) => Action::None,
+                Some(ItemState::Locked) => Action::UnlockSource(idx),
                 _ => Action::OpenSource(idx),
             }
         }
@@ -717,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn source_key_enter_locked_noop() {
+    fn source_key_enter_locked_unlocks() {
         let items = vec![MenuItem {
             label: "locked".into(),
             detail: String::new(),
@@ -725,7 +806,7 @@ mod tests {
         }];
         let mut menu = Menu::new(items, None);
         let action = handle_source_key(&mut menu, &Key::Enter);
-        assert!(matches!(action, Action::None));
+        assert!(matches!(action, Action::UnlockSource(0)));
     }
 
     #[test]
@@ -801,5 +882,81 @@ mod tests {
         let mut menu = Menu::new(items, None);
         let action = handle_entry_key(&mut menu, &entries, 0, &Key::Escape);
         assert!(matches!(action, Action::Back));
+    }
+
+    // --- Backspace key parsing ---
+
+    #[test]
+    fn parse_backspace_del() {
+        let mut input: &[u8] = b"\x7f";
+        assert_eq!(read_key(&mut input).unwrap(), Key::Backspace);
+    }
+
+    #[test]
+    fn parse_backspace_bs() {
+        let mut input: &[u8] = b"\x08";
+        assert_eq!(read_key(&mut input).unwrap(), Key::Backspace);
+    }
+
+    // --- Passphrase input handling tests ---
+
+    #[test]
+    fn passphrase_char_appends() {
+        let mut input = String::new();
+        let action = handle_passphrase_key(&mut input, &Key::Char('a'));
+        assert!(matches!(action, Action::Redraw));
+        assert_eq!(input, "a");
+        handle_passphrase_key(&mut input, &Key::Char('b'));
+        assert_eq!(input, "ab");
+    }
+
+    #[test]
+    fn passphrase_backspace_removes() {
+        let mut input = String::from("abc");
+        let action = handle_passphrase_key(&mut input, &Key::Backspace);
+        assert!(matches!(action, Action::Redraw));
+        assert_eq!(input, "ab");
+    }
+
+    #[test]
+    fn passphrase_backspace_empty_noop() {
+        let mut input = String::new();
+        handle_passphrase_key(&mut input, &Key::Backspace);
+        assert_eq!(input, "");
+    }
+
+    #[test]
+    fn passphrase_enter_submits() {
+        let mut input = String::from("secret");
+        let action = handle_passphrase_key(&mut input, &Key::Enter);
+        assert!(matches!(action, Action::SubmitPassphrase));
+    }
+
+    #[test]
+    fn passphrase_escape_cancels() {
+        let mut input = String::from("partial");
+        let action = handle_passphrase_key(&mut input, &Key::Escape);
+        assert!(matches!(action, Action::Back));
+    }
+
+    #[test]
+    fn render_passphrase_output() {
+        let mut buf = Vec::new();
+        render_passphrase(&mut buf, "my-disk", "secret", None).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("kexec-menu"));
+        assert!(output.contains("my-disk"));
+        assert!(output.contains("Unlock Encrypted Source"));
+        assert!(output.contains("******")); // 6 asterisks for "secret"
+        assert!(!output.contains("secret")); // passphrase not leaked
+    }
+
+    #[test]
+    fn render_passphrase_with_error() {
+        let mut buf = Vec::new();
+        render_passphrase(&mut buf, "disk", "", Some("bad passphrase")).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("Error:"));
+        assert!(output.contains("bad passphrase"));
     }
 }

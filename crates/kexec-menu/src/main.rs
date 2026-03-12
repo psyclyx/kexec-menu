@@ -25,7 +25,7 @@ fn run(dry_run: bool) -> Result<(), Box<dyn std::fmt::Display>> {
     }
 
     // Discover filesystem sources
-    let sources = mount::discover_sources().map_err(boxed)?;
+    let mut sources = mount::discover_sources().map_err(boxed)?;
     if sources.is_empty() {
         eprintln!("kexec-menu: no boot sources found");
         process::exit(1);
@@ -34,24 +34,7 @@ fn run(dry_run: bool) -> Result<(), Box<dyn std::fmt::Display>> {
     // Build boot trees for each source (1:1 with sources vec)
     let mut trees: Vec<(String, Vec<TreeNode>)> = Vec::new();
     for src in &sources {
-        match &src.state {
-            SourceState::Mounted => {
-                if let Some(mp) = &src.mount_point {
-                    let boot_dir = mp.join("boot");
-                    if boot_dir.is_dir() {
-                        match tree::walk_boot_tree(&boot_dir) {
-                            Ok(nodes) => trees.push((src.label.clone(), nodes)),
-                            Err(_) => trees.push((src.label.clone(), Vec::new())),
-                        }
-                    } else {
-                        trees.push((src.label.clone(), Vec::new()));
-                    }
-                } else {
-                    trees.push((src.label.clone(), Vec::new()));
-                }
-            }
-            _ => trees.push((src.label.clone(), Vec::new())),
-        }
+        build_source_tree(src, &mut trees);
     }
 
     // Resolve default boot selection
@@ -61,7 +44,7 @@ fn run(dry_run: bool) -> Result<(), Box<dyn std::fmt::Display>> {
     // Enter TUI
     let stdin = io::stdin();
     let stdout = io::stdout();
-    let result = run_tui(stdin.lock(), stdout.lock(), &sources, &trees, default.as_ref());
+    let result = run_tui(stdin.lock(), stdout.lock(), &mut sources, &mut trees, default.as_ref());
 
     match result {
         Ok(TuiResult::Quit) => {
@@ -109,8 +92,8 @@ enum TuiResult {
 fn run_tui(
     mut input: impl Read,
     mut output: impl Write,
-    sources: &[Source],
-    trees: &[(String, Vec<TreeNode>)],
+    sources: &mut Vec<Source>,
+    trees: &mut Vec<(String, Vec<TreeNode>)>,
     default: Option<&BootSelection>,
 ) -> io::Result<TuiResult> {
     let _raw = RawMode::enter()?;
@@ -129,6 +112,9 @@ fn run_tui(
             tui::Screen::Entries { source_label, leaf_label, menu, .. } => {
                 tui::render_entries(&mut output, source_label, leaf_label, menu)?;
             }
+            tui::Screen::Passphrase { source_label, input: pw_input, error, .. } => {
+                tui::render_passphrase(&mut output, source_label, pw_input, error.as_deref())?;
+            }
         }
 
         let key = tui::read_key(&mut input)?;
@@ -141,6 +127,7 @@ fn run_tui(
                         return Ok(TuiResult::Quit);
                     }
                     tui::Action::OpenSource(idx) => {
+                        tui::hide_cursor(&mut output)?;
                         let tree = trees.get(idx).map(|(_, t)| t.as_slice()).unwrap_or(&[]);
                         let label = trees.get(idx).map(|(l, _)| l.as_str()).unwrap_or("");
                         let (menu, nodes) = tui::build_tree_menu(tree, default);
@@ -149,6 +136,17 @@ fn run_tui(
                             source_label: label.to_string(),
                             menu,
                             nodes,
+                        };
+                    }
+                    tui::Action::UnlockSource(idx) => {
+                        let label = sources.get(idx)
+                            .map(|s| s.label.clone())
+                            .unwrap_or_default();
+                        screen = tui::Screen::Passphrase {
+                            source_idx: idx,
+                            source_label: label,
+                            input: String::new(),
+                            error: None,
                         };
                     }
                     tui::Action::Redraw => {}
@@ -210,7 +208,68 @@ fn run_tui(
                     _ => {}
                 }
             }
+            tui::Screen::Passphrase { source_idx, input: pw_input, .. } => {
+                let action = tui::handle_passphrase_key(pw_input, &key);
+                match action {
+                    tui::Action::SubmitPassphrase => {
+                        let si = *source_idx;
+                        let passphrase = pw_input.clone();
+                        // Borrow of screen fields ends here (si copied, passphrase cloned)
+                        match mount::unlock_and_mount(&sources[si].device, &passphrase) {
+                            Ok(mp) => {
+                                sources[si].state = SourceState::Mounted;
+                                sources[si].mount_point = Some(mp);
+                                // Rebuild tree for this source
+                                let mut new_trees = Vec::new();
+                                build_source_tree(&sources[si], &mut new_trees);
+                                if let Some(t) = new_trees.into_iter().next() {
+                                    trees[si] = t;
+                                }
+                                tui::hide_cursor(&mut output)?;
+                                screen = tui::Screen::Sources(
+                                    tui::build_source_menu(sources, default, trees),
+                                );
+                            }
+                            Err(e) => {
+                                if let tui::Screen::Passphrase { input, error, .. } = &mut screen {
+                                    *error = Some(format!("{e}"));
+                                    input.clear();
+                                }
+                            }
+                        }
+                    }
+                    tui::Action::Back => {
+                        tui::hide_cursor(&mut output)?;
+                        screen = tui::Screen::Sources(
+                            tui::build_source_menu(sources, default, trees),
+                        );
+                    }
+                    tui::Action::Redraw => {}
+                    _ => {}
+                }
+            }
         }
+    }
+}
+
+fn build_source_tree(src: &Source, trees: &mut Vec<(String, Vec<TreeNode>)>) {
+    match &src.state {
+        SourceState::Mounted => {
+            if let Some(mp) = &src.mount_point {
+                let boot_dir = mp.join("boot");
+                if boot_dir.is_dir() {
+                    match tree::walk_boot_tree(&boot_dir) {
+                        Ok(nodes) => trees.push((src.label.clone(), nodes)),
+                        Err(_) => trees.push((src.label.clone(), Vec::new())),
+                    }
+                } else {
+                    trees.push((src.label.clone(), Vec::new()));
+                }
+            } else {
+                trees.push((src.label.clone(), Vec::new()));
+            }
+        }
+        _ => trees.push((src.label.clone(), Vec::new())),
     }
 }
 

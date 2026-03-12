@@ -5,8 +5,9 @@
 
 use std::ffi::CString;
 use std::fs;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use crate::types::{Error, Result, Source, SourceState};
 
@@ -407,6 +408,82 @@ pub fn bcachefs_is_encrypted(dev: &Path) -> Result<bool> {
     // BCH_SB_ENCRYPTION_TYPE: bits 10..14
     let enc_type = (flags1 >> 10) & 0xF;
     Ok(enc_type != 0)
+}
+
+// --- Encrypted source unlocking ---
+
+/// Unlock an encrypted source and mount it read-only.
+///
+/// For LUKS: opens the container via cryptsetup, probes inner fs, mounts.
+/// For bcachefs: unlocks via bcachefs tool, then mounts directly.
+pub fn unlock_and_mount(dev: &Path, passphrase: &str) -> Result<PathBuf> {
+    let fstype = probe_fs_type(dev)?
+        .ok_or_else(|| Error::Parse("unknown filesystem".into()))?;
+    match fstype {
+        FsType::Luks => {
+            let mapped = unlock_luks(dev, passphrase)?;
+            let inner_fs = probe_fs_type(&mapped)?
+                .ok_or_else(|| Error::Parse("no filesystem inside LUKS container".into()))?;
+            mount_ro(&mapped, inner_fs)
+        }
+        FsType::Bcachefs => {
+            unlock_bcachefs(dev, passphrase)?;
+            mount_ro(dev, FsType::Bcachefs)
+        }
+        other => Err(Error::Parse(format!("{} is not encrypted", other.as_str()))),
+    }
+}
+
+/// Open a LUKS container via cryptsetup. Returns the mapped device path.
+fn unlock_luks(dev: &Path, passphrase: &str) -> Result<PathBuf> {
+    let dev_name = dev.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".to_string());
+    let mapper_name = format!("kexec-{}", dev_name);
+
+    let mut child = Command::new("cryptsetup")
+        .args(["open", "--type", "luks", "--key-file", "-"])
+        .arg(dev)
+        .arg(&mapper_name)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(passphrase.as_bytes());
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Parse(format!("cryptsetup: {}", stderr.trim())));
+    }
+
+    Ok(PathBuf::from("/dev/mapper").join(&mapper_name))
+}
+
+/// Unlock a bcachefs filesystem by adding the key to the kernel keyring.
+fn unlock_bcachefs(dev: &Path, passphrase: &str) -> Result<()> {
+    let mut child = Command::new("bcachefs")
+        .arg("unlock")
+        .arg(dev)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(passphrase.as_bytes());
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Parse(format!("bcachefs unlock: {}", stderr.trim())));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
