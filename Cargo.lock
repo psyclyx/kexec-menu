@@ -7,6 +7,7 @@ name = "kexec-menu"
 version = "0.1.0"
 dependencies = [
  "kexec-menu-core",
+ "libc",
 ]
 
 [[package]]

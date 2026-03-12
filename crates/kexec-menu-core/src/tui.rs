@@ -152,6 +152,7 @@ pub enum Screen {
         source_idx: usize,
         source_label: String,
         leaf_label: String,
+        leaf_path: std::path::PathBuf,
         menu: Menu,
         entries: Vec<Entry>,
     },
