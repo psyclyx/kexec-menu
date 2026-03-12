@@ -2,6 +2,74 @@
 
 let
   cfg = config.boot.loader.kexec-menu;
+
+  copyCmd = {
+    copy = "cp";
+    reflink = "cp --reflink=auto";
+    snapshot = "cp --reflink=auto"; # snapshot handled separately
+  }.${cfg.installStrategy};
+
+  installer = pkgs.writeShellApplication {
+    name = "kexec-menu-install";
+    runtimeInputs = with pkgs; [ coreutils jq ];
+    text = ''
+      toplevel="$1"
+      boot_dir="${cfg.bootMountPoint}/nixos"
+
+      # Derive leaf name from store path hash
+      store_basename="$(basename "$toplevel")"
+      leaf_name="''${store_basename%%-*}"
+      leaf_dir="$boot_dir/$leaf_name"
+
+      mkdir -p "$leaf_dir"
+
+      # Copy kernel and initrd
+      ${copyCmd} "$(readlink -f "$toplevel/kernel")" "$leaf_dir/vmlinuz"
+      ${copyCmd} "$(readlink -f "$toplevel/initrd")" "$leaf_dir/initrd"
+
+      # Read kernel cmdline
+      cmdline="$(cat "$toplevel/kernel-params")"
+
+      # Build entries array: default entry first
+      entries="$(jq -n --arg cmdline "$cmdline" \
+        '[{"name": "default", "kernel": "vmlinuz", "initrd": "initrd", "cmdline": $cmdline}]')"
+
+      # Add specialisation entries
+      spec_dir="$toplevel/specialisation"
+      if [ -d "$spec_dir" ]; then
+        for spec in "$spec_dir"/*/; do
+          [ -d "$spec" ] || continue
+          spec_name="$(basename "$spec")"
+
+          # Each specialisation has its own kernel, initrd, kernel-params
+          spec_kernel="vmlinuz-$spec_name"
+          spec_initrd="initrd-$spec_name"
+
+          ${copyCmd} "$(readlink -f "$spec/kernel")" "$leaf_dir/$spec_kernel"
+          ${copyCmd} "$(readlink -f "$spec/initrd")" "$leaf_dir/$spec_initrd"
+          spec_cmdline="$(cat "$spec/kernel-params")"
+
+          entries="$(echo "$entries" | jq \
+            --arg name "$spec_name" \
+            --arg kernel "$spec_kernel" \
+            --arg initrd "$spec_initrd" \
+            --arg cmdline "$spec_cmdline" \
+            '. + [{"name": $name, "kernel": $kernel, "initrd": $initrd, "cmdline": $cmdline}]')"
+        done
+      fi
+
+      echo "$entries" > "$leaf_dir/entries.json"
+
+      # Touch mtime so the bootmenu picks this as most recent
+      touch "$leaf_dir"
+
+      # Optionally install UKI
+      ${lib.optionalString (cfg.ukiInstallPath != null) ''
+        mkdir -p "$(dirname "${cfg.ukiInstallPath}")"
+        cp "${cfg.package}" "${cfg.ukiInstallPath}"
+      ''}
+    '';
+  };
 in
 {
   options.boot.loader.kexec-menu = {
@@ -43,10 +111,9 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # Installer script will be wired up in a subsequent iteration.
-    # boot.loader.external = {
-    #   enable = true;
-    #   installBootLoader = "${installer}/bin/kexec-menu-install";
-    # };
+    boot.loader.external = {
+      enable = true;
+      installBootLoader = "${installer}/bin/kexec-menu-install";
+    };
   };
 }
