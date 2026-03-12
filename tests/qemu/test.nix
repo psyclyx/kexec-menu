@@ -20,6 +20,7 @@ pkgs.writeShellApplication {
   runtimeInputs = [
     pkgs.qemu
     pkgs.e2fsprogs       # mke2fs, fuse2fs, debugfs
+    pkgs.btrfs-progs     # mkfs.btrfs
     pkgs.fuse            # fusermount
     pkgs.cpio
     pkgs.pkgsStatic.busybox
@@ -50,9 +51,12 @@ pkgs.writeShellApplication {
     echo "kernel: $QEMU_KERNEL"
     echo "modules: $QEMU_KERNEL_MODULES"
 
-    # --- Create test disk ---
+    # --- Create test disks ---
     DISK="$BUILD_DIR/test-disk.ext4"
     "$REPO_ROOT/tests/qemu/create-test-disk.sh" "$DISK"
+    # Empty 64MB disk — formatted as btrfs inside QEMU by init-test.sh
+    BTRFS_DISK="$BUILD_DIR/test-disk.raw"
+    truncate -s 64M "$BTRFS_DISK"
 
     # --- Create initrd ---
     INITRD="$BUILD_DIR/initrd-test.cpio"
@@ -65,6 +69,7 @@ pkgs.writeShellApplication {
     done
 
     cp "$BINARY" "$INITRD_DIR/bin/kexec-menu"
+    cp "${pkgs.pkgsStatic.btrfs-progs}/bin/mkfs.btrfs" "$INITRD_DIR/bin/mkfs.btrfs"
     cp "$REPO_ROOT/tests/qemu/init-test.sh" "$INITRD_DIR/init"
     chmod +x "$INITRD_DIR/init"
 
@@ -82,6 +87,10 @@ pkgs.writeShellApplication {
         "fs/mbcache.ko"
         "fs/jbd2/jbd2.ko"
         "fs/ext4/ext4.ko"
+        # btrfs
+        "crypto/xor.ko"
+        "lib/raid6/raid6_pq.ko"
+        "fs/btrfs/btrfs.ko"
     )
 
     KMOD_DIR="$INITRD_DIR/lib/modules"
@@ -115,6 +124,7 @@ pkgs.writeShellApplication {
             -initrd "$INITRD" \
             -append "console=ttyS0 panic=-1" \
             -drive "file=$DISK,format=raw,if=virtio,readonly=on" \
+            -drive "file=$BTRFS_DISK,format=raw,if=virtio" \
             -m 256M \
             -nographic \
             -no-reboot \

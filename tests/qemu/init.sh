@@ -23,7 +23,8 @@ if [ -d /lib/modules ]; then
         virtio_pci_modern_dev virtio_pci_legacy_dev virtio_pci \
         virtio_blk \
         crc16 crc32c-cryptoapi mbcache jbd2 \
-        ext4; do
+        ext4 \
+        xor raid6_pq btrfs; do
         ko="/lib/modules/${mod}.ko"
         if [ -f "$ko" ]; then
             insmod "$ko" 2>/dev/null && echo "  loaded $mod" || echo "  skip $mod (already loaded or error)"

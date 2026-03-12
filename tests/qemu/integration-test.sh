@@ -63,12 +63,15 @@ if [[ ! -f "$BINARY" ]]; then
     exit 1
 fi
 
-# --- Create test disk (tmpfile, cleaned up on exit) ---
+# --- Create test disks (tmpfiles, cleaned up on exit) ---
 mkdir -p "$BUILD_DIR"
 DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.ext4")"
-cleanup_disk() { rm -f "$DISK"; }
-trap cleanup_disk EXIT
+BTRFS_DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.raw")"
+cleanup_disks() { rm -f "$DISK" "$BTRFS_DISK"; }
+trap cleanup_disks EXIT
 "$REPO_ROOT/tests/qemu/create-test-disk.sh" "$DISK"
+# Empty 64MB disk — formatted as btrfs inside QEMU by init-test.sh
+truncate -s 64M "$BTRFS_DISK"
 
 # --- Create initrd (with test init) ---
 INITRD="$BUILD_DIR/initrd-test.cpio"
@@ -87,6 +90,9 @@ for cmd in sh mount umount mkdir ls cat sleep poweroff insmod grep; do
 done
 
 cp "$BINARY" "$INITRD_DIR/bin/kexec-menu"
+if [[ -n "${MKFS_BTRFS_STATIC:-}" && -f "$MKFS_BTRFS_STATIC" ]]; then
+    cp "$MKFS_BTRFS_STATIC" "$INITRD_DIR/bin/mkfs.btrfs"
+fi
 cp "$REPO_ROOT/tests/qemu/init-test.sh" "$INITRD_DIR/init"
 chmod +x "$INITRD_DIR/init"
 
@@ -104,6 +110,10 @@ NEEDED_MODULES=(
     "fs/mbcache.ko"
     "fs/jbd2/jbd2.ko"
     "fs/ext4/ext4.ko"
+    # btrfs
+    "crypto/xor.ko"
+    "lib/raid6/raid6_pq.ko"
+    "fs/btrfs/btrfs.ko"
 )
 
 KMOD_DIR="$INITRD_DIR/lib/modules"
@@ -137,6 +147,7 @@ timeout "$TIMEOUT_SECS" \
         -initrd "$INITRD" \
         -append "console=ttyS0 panic=-1" \
         -drive "file=$DISK,format=raw,if=virtio,readonly=on" \
+        -drive "file=$BTRFS_DISK,format=raw,if=virtio" \
         -m 256M \
         -nographic \
         -no-reboot \
