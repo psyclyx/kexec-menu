@@ -24,7 +24,7 @@ rustPlatform.buildRustPackage {
       # Include Cargo files, Rust source, and nothing else
       baseName == "Cargo.toml"
       || baseName == "Cargo.lock"
-      || lib.hasPrefix "crates/" relPath;
+      || lib.hasPrefix "crates" relPath;
   };
 
   cargoLock.lockFile = ./Cargo.lock;
