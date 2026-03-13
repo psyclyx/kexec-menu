@@ -3,6 +3,13 @@
 let
   cfg = config.boot.loader.kexec-menu;
 
+  top = import ./..;
+
+  arch =
+    if pkgs.stdenv.hostPlatform.isx86_64 then "x86_64"
+    else if pkgs.stdenv.hostPlatform.isAarch64 then "aarch64"
+    else throw "kexec-menu: unsupported architecture";
+
   hasStylix = config ? stylix
     && config.stylix ? enable && config.stylix.enable
     && config ? lib && config.lib ? stylix && config.lib.stylix ? colors;
@@ -146,13 +153,7 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = let
-        top = import ./..;
-        arch =
-          if pkgs.stdenv.hostPlatform.isx86_64 then "x86_64"
-          else if pkgs.stdenv.hostPlatform.isAarch64 then "aarch64"
-          else throw "kexec-menu: unsupported architecture";
-      in top."uki-${arch}";
+      default = top."uki-${arch}";
       defaultText = lib.literalExpression ''
         (import ''${kexec-menu-src})."uki-''${arch}"
       '';
@@ -163,11 +164,33 @@ in
       type = lib.types.package;
       readOnly = true;
       default =
-        if resolvedTheme != null
-        then cfg.package.override { theme = resolvedTheme; }
-        else cfg.package;
-      defaultText = lib.literalExpression "cfg.package (with theme overrides applied)";
-      description = "The final kexec-menu UKI package after applying theme overrides. Read-only.";
+        let
+          binaryOverrides =
+            lib.optionalAttrs (resolvedTheme != null) { theme = resolvedTheme; }
+            // lib.optionalAttrs (cfg.timeout != null) { inherit (cfg) timeout; };
+        in
+          if binaryOverrides == {} then cfg.package
+          else
+            let
+              binaryName = if arch == "aarch64" then "kexec-menu-aarch64" else "kexec-menu";
+              binary = top.${binaryName}.override binaryOverrides;
+              initrd = top."initrd-${arch}".override { kexec-menu = binary; };
+            in top."uki-${arch}".override { inherit initrd; };
+      defaultText = lib.literalExpression "cfg.package (with theme/timeout overrides applied)";
+      description = "The final kexec-menu UKI package after applying overrides. Read-only.";
+    };
+
+    timeout = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.unsigned;
+      default = null;
+      example = 5;
+      description = ''
+        Autoboot timeout in seconds. The default entry will be booted
+        automatically after this many seconds unless a key is pressed.
+        Set to 0 for near-instant boot (100ms interrupt window).
+        Set to 65535 to disable autoboot entirely.
+        When null, uses the compiled-in default (5 seconds).
+      '';
     };
 
     theme = lib.mkOption {

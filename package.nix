@@ -11,6 +11,8 @@
   # Optional base16 theme: attrset of { base00 = "1d1f21"; ... base0F = "a3685a"; }
   # Passed to the binary as a compile-time JSON env var.
   theme ? null,
+  # Optional autoboot timeout in seconds (null = use hardcoded default of 5).
+  timeout ? null,
 }:
 
 rustPlatform.buildRustPackage ({
@@ -43,4 +45,6 @@ rustPlatform.buildRustPackage ({
 } // lib.optionalAttrs (theme != null) {
   # Base16 theme as JSON, read by the binary via option_env!("KEXEC_MENU_THEME")
   KEXEC_MENU_THEME = builtins.toJSON theme;
+} // lib.optionalAttrs (timeout != null) {
+  KEXEC_MENU_TIMEOUT_DEFAULT = toString timeout;
 })
