@@ -665,6 +665,46 @@ fn mount_bcachefs_group(group: &DeviceGroup) -> Result<PathBuf> {
     Ok(mount_point)
 }
 
+/// Mount an incomplete bcachefs group in degraded mode.
+/// Uses `-o degraded,ro` to allow mounting with missing devices.
+#[cfg(feature = "fs-bcachefs")]
+fn mount_bcachefs_group_degraded(group: &DeviceGroup) -> Result<PathBuf> {
+    let dev_str: String = group.devices.iter()
+        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(":");
+
+    let first_name = group.devices.first()
+        .and_then(|(p, _)| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mount_point = PathBuf::from(MOUNT_BASE).join(format!("{first_name}-multi"));
+    fs::create_dir_all(&mount_point)?;
+
+    let c_dev = CString::new(dev_str.as_bytes())
+        .map_err(|_| Error::Parse("device string contains NUL byte".into()))?;
+    let c_target = path_to_cstring(&mount_point)?;
+    let c_fstype = CString::new("bcachefs").unwrap();
+    let c_opts = CString::new("degraded").unwrap();
+
+    let ret = unsafe {
+        libc::mount(
+            c_dev.as_ptr(),
+            c_target.as_ptr(),
+            c_fstype.as_ptr(),
+            libc::MS_RDONLY,
+            c_opts.as_ptr() as *const libc::c_void,
+        )
+    };
+
+    if ret != 0 {
+        return Err(Error::Io(io::Error::last_os_error()));
+    }
+
+    Ok(mount_point)
+}
+
 /// Mount a multi-device btrfs filesystem.
 /// Requires `btrfs device scan` on each member before mounting any one device.
 #[cfg(feature = "fs-btrfs")]
@@ -737,17 +777,58 @@ pub fn best_label(dev: &BlockDevice, fstype: Option<FsType>) -> String {
     dev.name.clone()
 }
 
-/// Discover all mountable sources by enumerating block devices and probing.
-///
-/// For each device:
-/// - Probe filesystem type (including multi-device info)
-/// - Group multi-device filesystems by UUID
-/// - Attempt read-only mount (single devices directly, multi-device via group mount)
-/// - Mark encrypted/errored sources appropriately
-pub fn discover_sources() -> Result<Vec<Source>> {
-    let devices = enumerate_block_devices()?;
-    let mut probed_devices = Vec::new();
-    let mut sources = Vec::new();
+/// Timeout for multi-device assembly: number of 1-second retries.
+const MULTI_DEVICE_TIMEOUT_SECS: u32 = 5;
+
+/// Probe all block devices, returning LUKS sources, multi-device probes, and singles.
+fn probe_all_devices(
+    devices: &[BlockDevice],
+) -> (Vec<Source>, Vec<ProbeResult>) {
+    let mut luks_sources = Vec::new();
+    let mut probed = Vec::new();
+
+    for dev in devices {
+        #[cfg(feature = "disk-whitelist")]
+        if !device_allowed(&dev.name) {
+            continue;
+        }
+        let fstype = match probe_fs_type(&dev.path) {
+            Ok(Some(ft)) => ft,
+            Ok(None) => continue,
+            Err(_) => continue,
+        };
+
+        #[cfg(feature = "fs-luks")]
+        if matches!(fstype, FsType::Luks) {
+            let label = best_label(dev, Some(fstype));
+            luks_sources.push(Source {
+                label,
+                device: dev.path.clone(),
+                state: SourceState::Encrypted,
+                mount_point: None,
+                passphrase: None,
+            });
+            continue;
+        }
+
+        let multi = read_multi_device_info(&dev.path, fstype).unwrap_or(None);
+        probed.push(ProbeResult {
+            path: dev.path.clone(),
+            fstype,
+            multi,
+        });
+    }
+
+    (luks_sources, probed)
+}
+
+/// Re-probe only devices relevant to incomplete groups.
+/// Returns new ProbeResults for devices that match any incomplete group's UUID.
+fn reprobe_for_groups(
+    incomplete: &[&DeviceGroup],
+) -> Vec<ProbeResult> {
+    let devices = enumerate_block_devices().unwrap_or_default();
+    let mut results = Vec::new();
 
     for dev in &devices {
         #[cfg(feature = "disk-whitelist")]
@@ -759,37 +840,115 @@ pub fn discover_sources() -> Result<Vec<Source>> {
             Ok(None) => continue,
             Err(_) => continue,
         };
-
-        // LUKS devices are never part of multi-device groups
-        #[cfg(feature = "fs-luks")]
-        if matches!(fstype, FsType::Luks) {
-            let label = best_label(dev, Some(fstype));
-            sources.push(Source {
-                label,
-                device: dev.path.clone(),
-                state: SourceState::Encrypted,
-                mount_point: None,
-                passphrase: None,
-            });
-            continue;
-        }
-
-        // Probe multi-device info
-        let multi = read_multi_device_info(&dev.path, fstype).unwrap_or(None);
-        probed_devices.push(ProbeResult {
-            path: dev.path.clone(),
-            fstype,
-            multi,
+        let multi = match read_multi_device_info(&dev.path, fstype) {
+            Ok(Some(m)) => m,
+            _ => continue,
+        };
+        // Only keep if it matches an incomplete group
+        let dominated = incomplete.iter().any(|g| {
+            g.fs_uuid == multi.fs_uuid && fstype_tag(g.fstype) == fstype_tag(fstype)
         });
+        if dominated {
+            results.push(ProbeResult {
+                path: dev.path.clone(),
+                fstype,
+                multi: Some(multi),
+            });
+        }
     }
 
-    // Separate multi-device groups from singles
-    let (groups, singles) = group_multi_device(probed_devices);
+    results
+}
 
-    // Mount complete multi-device groups
+/// Discover all mountable sources by enumerating block devices and probing.
+///
+/// For each device:
+/// - Probe filesystem type (including multi-device info)
+/// - Group multi-device filesystems by UUID
+/// - Wait up to 5s for incomplete multi-device groups, re-scanning
+/// - Attempt degraded mount for bcachefs if still incomplete after timeout
+/// - Attempt read-only mount (single devices directly, multi-device via group mount)
+/// - Mark encrypted/errored sources appropriately
+pub fn discover_sources() -> Result<Vec<Source>> {
+    let devices = enumerate_block_devices()?;
+    let mut sources = Vec::new();
+
+    let (luks_sources, probed_devices) = probe_all_devices(&devices);
+    sources.extend(luks_sources);
+
+    // Separate multi-device groups from singles
+    let (mut groups, singles) = group_multi_device(probed_devices);
+
+    // Wait for incomplete groups (re-scan up to MULTI_DEVICE_TIMEOUT_SECS times)
+    if groups.iter().any(|g| !g.is_complete()) {
+        for _ in 0..MULTI_DEVICE_TIMEOUT_SECS {
+            let incomplete: Vec<&DeviceGroup> =
+                groups.iter().filter(|g| !g.is_complete()).collect();
+            if incomplete.is_empty() {
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+
+            let new_probes = reprobe_for_groups(&incomplete);
+            if new_probes.is_empty() {
+                continue;
+            }
+
+            // Re-group with new probes merged into existing groups
+            let (new_groups, _) = group_multi_device(new_probes);
+            for ng in new_groups {
+                if let Some(existing) = groups.iter_mut().find(|g| {
+                    g.fs_uuid == ng.fs_uuid && fstype_tag(g.fstype) == fstype_tag(ng.fstype)
+                }) {
+                    // Merge: add any devices not already present
+                    for (path, idx) in &ng.devices {
+                        if !existing.devices.iter().any(|(p, _)| p == path) {
+                            existing.devices.push((path.clone(), *idx));
+                        }
+                    }
+                    existing.devices.sort_by_key(|&(_, idx)| idx);
+                }
+            }
+
+            if groups.iter().all(|g| g.is_complete()) {
+                break;
+            }
+        }
+    }
+
+    // Mount multi-device groups (complete, degraded, or error)
     for group in &groups {
         let label = format_group_label(group, &devices);
         if !group.is_complete() {
+            // Try degraded mount for bcachefs; btrfs stays as error
+            #[cfg(feature = "fs-bcachefs")]
+            if group.fstype == FsType::Bcachefs {
+                match mount_bcachefs_group_degraded(group) {
+                    Ok(mp) => {
+                        sources.push(Source {
+                            label,
+                            device: group.devices[0].0.clone(),
+                            state: SourceState::Mounted,
+                            mount_point: Some(mp),
+                            passphrase: None,
+                        });
+                        continue;
+                    }
+                    #[cfg(feature = "fs-bcachefs")]
+                    Err(Error::Io(ref e)) if e.raw_os_error() == Some(ENOKEY) => {
+                        sources.push(Source {
+                            label,
+                            device: group.devices[0].0.clone(),
+                            state: SourceState::Encrypted,
+                            mount_point: None,
+                            passphrase: None,
+                        });
+                        continue;
+                    }
+                    Err(_) => {} // fall through to incomplete error
+                }
+            }
             sources.push(Source {
                 label,
                 device: group.devices[0].0.clone(),
