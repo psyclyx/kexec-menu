@@ -30,29 +30,17 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - uses: DeterminateSystems/magic-nix-cache-action@v13
 
-      - name: binary
-        run: nix-build -A kexec-menu -o result-bin
-
-      - name: logo
-        run: nix-build -A logo -o result-logo
-
-      - name: kernel
-        run: nix-build -A kernel-x86_64 -o result-kernel
-
-      - name: initrd
-        run: nix-build -A initrd-x86_64 -o result-initrd
-
       - name: uki
         run: nix-build -A uki-x86_64 -o result-uki
 
       - name: stage artifacts
         run: |
           mkdir -p artifacts
+          cp result-uki/kexec-menu.efi artifacts/kexec-menu-x86_64.efi
+          nix-build -A kexec-menu -o result-bin
           cp result-bin/bin/kexec-menu artifacts/kexec-menu-x86_64
-          cp result-uki artifacts/kexec-menu-x86_64.efi
 
-      - name: upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: x86_64
           path: artifacts/
@@ -64,26 +52,17 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - uses: DeterminateSystems/magic-nix-cache-action@v13
 
-      - name: binary
-        run: nix-build -A kexec-menu-aarch64 -o result-bin
-
-      - name: kernel
-        run: nix-build -A kernel-aarch64 -o result-kernel
-
-      - name: initrd
-        run: nix-build -A initrd-aarch64 -o result-initrd
-
       - name: uki
         run: nix-build -A uki-aarch64 -o result-uki
 
       - name: stage artifacts
         run: |
           mkdir -p artifacts
+          cp result-uki/kexec-menu.efi artifacts/kexec-menu-aarch64.efi
+          nix-build -A kexec-menu-aarch64 -o result-bin
           cp result-bin/bin/kexec-menu artifacts/kexec-menu-aarch64
-          cp result-uki artifacts/kexec-menu-aarch64.efi
 
-      - name: upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: aarch64
           path: artifacts/
