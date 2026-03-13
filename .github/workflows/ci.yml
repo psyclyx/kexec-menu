@@ -34,6 +34,8 @@ jobs:
             artifact: kexec-menu-aarch64
           - attr: uki-x86_64
             artifact: kexec-menu-x86_64.efi
+          - attr: uki-aarch64
+            artifact: kexec-menu-aarch64.efi
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
