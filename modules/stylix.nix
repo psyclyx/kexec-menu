@@ -1,16 +1,21 @@
-# Stylix target integration for kexec-menu.
+# Stylix integration for kexec-menu.
 #
-# Import this module alongside nixos.nix when Stylix is in use.
-# It defines stylix.targets.kexec-menu.enable and, when active,
-# sets boot.loader.kexec-menu.theme from the Stylix palette.
-{ config, lib, ... }:
+# Imported automatically by nixos.nix. No-op when Stylix is not present.
+# When Stylix is active, defines stylix.targets.kexec-menu.enable (default: true)
+# and sets the boot menu theme from the Stylix palette.
+{ config, lib, options, ... }:
 
+let
+  hasStylix = options ? stylix;
+in
 {
-  options.stylix.targets.kexec-menu.enable =
-    config.lib.stylix.mkEnableTarget "the kexec-menu boot menu" true;
+  options = lib.optionalAttrs hasStylix {
+    stylix.targets.kexec-menu.enable =
+      config.lib.stylix.mkEnableTarget "the kexec-menu boot menu" true;
+  };
 
   config = lib.mkIf
-    (config.stylix.enable && config.stylix.targets.kexec-menu.enable) {
+    (hasStylix && config.stylix.enable && config.stylix.targets.kexec-menu.enable) {
     boot.loader.kexec-menu.theme =
       let c = config.lib.stylix.colors; in
       builtins.mapAttrs (_: toString) {

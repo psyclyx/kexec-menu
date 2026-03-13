@@ -5,31 +5,6 @@ devices, discovers boot entries, presents a TUI, kexecs the selection.
 
 Targets: x86_64, aarch64 (UEFI).
 
-## Install
-
-### NixOS
-
-```nix
-{ imports = [ kexec-menu.modules.nixos ]; }
-
-{ boot.loader.kexec-menu.enable = true; }
-```
-
-### Arch Linux
-
-A `PKGBUILD` is included. It builds the static binary only — the UKI
-requires additional components (kernel, initrd, static tools). See
-[Building the UKI](#uki) for the full pipeline.
-
-    makepkg -si
-
-### Manual
-
-Copy `kexec-menu.efi` to the ESP and add a UEFI boot entry:
-
-    efibootmgr --create --disk /dev/sda --part 1 \
-      --label "kexec-menu" --loader '\EFI\kexec-menu\kexec-menu.efi'
-
 ## Usage
 
     kexec-menu                 # boot menu
@@ -57,6 +32,36 @@ All fields required:
 | `initrd` | Filename in the leaf directory. |
 | `cmdline` | Full kernel command line. |
 
+## Install
+
+### NixOS
+
+```nix
+{ imports = [ kexec-menu.modules.nixos ]; }
+
+{ boot.loader.kexec-menu.enable = true; }
+```
+
+If [Stylix](https://github.com/danth/stylix) is present, the module
+automatically applies the Base16 palette to the TUI. Disable with
+`stylix.targets.kexec-menu.enable = false`.
+
+See [NixOS module options](#nixos-module-options) for full configuration.
+
+### Arch Linux
+
+A `PKGBUILD` is included (static binary only). The UKI requires additional
+components; see [UKI](#uki).
+
+    makepkg -si
+
+### Manual
+
+Copy `kexec-menu.efi` to the ESP and add a UEFI boot entry:
+
+    efibootmgr --create --disk /dev/sda --part 1 \
+      --label "kexec-menu" --loader '\EFI\kexec-menu\kexec-menu.efi'
+
 ## Building
 
 With Nix:
@@ -64,7 +69,7 @@ With Nix:
     nix-build                          # x86_64 static binary
     nix-build -A kexec-menu-aarch64    # aarch64 cross-compile
 
-Without Nix (Rust toolchain + musl targets required):
+Without Nix (Rust toolchain + musl targets):
 
     make            # x86_64
     make aarch64    # aarch64
@@ -121,7 +126,7 @@ Individual steps:
 
 Kernel: tinyconfig + project fragments (`uki/kernel/`), `CONFIG_EFI_STUB=y`.
 
-## Feature Flags
+### Feature flags
 
 Compile-time Cargo features:
 
@@ -137,7 +142,7 @@ Disable all with `--no-default-features`:
 
 ## Testing
 
-    cargo test --workspace      # unit tests
+    cargo test --workspace
     make test
 
 QEMU integration (ext4/btrfs/XFS/F2FS/LUKS/btrfs RAID1, disk filtering):
@@ -148,28 +153,7 @@ NixOS module VM tests (installer, specialisations, pruning, dedup, UKI install):
 
     nix-build -A tests.installer
 
-## NixOS Module
-
-```nix
-{ imports = [ kexec-menu.modules.nixos ]; }
-
-{ boot.loader.kexec-menu.enable = true; }
-```
-
-### Stylix
-
-```nix
-{ imports = [
-    kexec-menu.modules.nixos
-    kexec-menu.modules.stylix
-  ];
-}
-```
-
-Provides `stylix.targets.kexec-menu.enable` (default: `true` when Stylix is
-active). Applies the Base16 palette to the TUI.
-
-### Options
+## NixOS Module Options
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -181,7 +165,7 @@ active). Applies the Base16 palette to the TUI.
 | `installStrategy` | `"copy"` or `"reflink"` | `"copy"` | `copy`: skip identical files. `reflink`: `cp --reflink=auto` (bcachefs/btrfs). |
 | `ukiInstallPath` | null or string | `null` | Copy UKI here on rebuild |
 | `timeout` | null or uint | `null` | Autoboot seconds. `null` = default (5s). |
-| `theme` | null or attrs | `null` | Base16 colorscheme. Use `modules/stylix.nix` for auto-detection. |
+| `theme` | null or attrs | `null` | Base16 colorscheme. Set automatically by Stylix when present. |
 
 Hooks into `boot.loader.external`. Each `nixos-rebuild` writes
 kernel/initrd/entries.json to `<bootMountPoint>/nixos/` and prunes past

@@ -104,6 +104,8 @@ let
   };
 in
 {
+  imports = [ ./stylix.nix ];
+
   options.boot.loader.kexec-menu = {
     enable = lib.mkEnableOption "kexec-menu bootloader";
 
