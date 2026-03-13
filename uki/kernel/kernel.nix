@@ -1,93 +1,70 @@
-# Builds a minimal kernel for kexec-menu from tinyconfig + config fragments.
+# Builds a minimal kernel for kexec-menu by calling scripts/mkkernel.sh.
+#
+# This is a thin Nix wrapper — all build logic lives in mkkernel.sh.
+# The kernel source is pinned in source.nix.
 #
 # Usage (from default.nix):
 #   kernel-x86_64  = callPackage ./uki/kernel/kernel.nix { arch = "x86_64"; }
-#   kernel-aarch64 = aarch64Musl.callPackage ./uki/kernel/kernel.nix { arch = "aarch64"; }
+#   kernel-aarch64 = callPackage ./uki/kernel/kernel.nix { arch = "aarch64"; }
 #
 # Args:
 #   arch         — "x86_64" or "aarch64"
-#   initramfs    — path to CPIO archive to embed (or null for no built-in initramfs)
-#   cmdline      — kernel command line to embed (or "" for none)
-#   extraConfig  — additional structuredExtraConfig attrs
-#   extraModules — additional kernel modules to enable
-#   logo         — path to 80x80 PPM file to replace the default boot logo (or null)
+#   kernelSrc    — pre-fetched kernel source tarball
+#   initramfs    — path to CPIO archive to embed (or null)
+#   cmdline      — kernel command line to embed (or "")
+#   extraConfig  — path to additional config fragment file (or null)
+#   logo         — path to 80x80 PPM boot logo (or null)
 {
   lib,
-  linuxPackages_latest,
+  runCommand,
+  kernelSrc,
   arch ? "x86_64",
   initramfs ? null,
   cmdline ? "",
-  extraConfig ? {},
-  extraModules ? [],
+  extraConfig ? null,
   logo ? null,
+
+  # Build dependencies
+  flex,
+  bison,
+  bc,
+  perl,
+  elfutils,
+  openssl,
+  gnumake,
+  stdenv,
+  gzip,
+  cpio,
+  zstd,
+  python3,
+  pkg-config,
 }:
 
 let
-  inherit (lib.kernel) yes no module freeform;
-  force = x: lib.mkForce x;
+  imageName = if arch == "x86_64" then "bzImage" else "Image";
+  configDir = ./.;
+in
 
-  # Parse a kernel config fragment file into structuredExtraConfig attrs.
-  # Each "CONFIG_FOO=y" line becomes { FOO = force yes; }, etc.
-  # Values are wrapped in mkForce to override nixpkgs common-config.nix defaults.
-  parseConfigFile = path:
-    let
-      contents = builtins.readFile path;
-      lines = lib.splitString "\n" contents;
-      parseLine = line:
-        let
-          m = builtins.match "CONFIG_([A-Za-z0-9_]+)=(.*)" line;
-        in
-        if m == null then null
-        else {
-          name = builtins.elemAt m 0;
-          value =
-            let v = builtins.elemAt m 1; in
-            if v == "y" then force yes
-            else if v == "m" then force module
-            else if v == "n" then force no
-            else force (freeform v);
-        };
-      parsed = builtins.filter (x: x != null) (map parseLine lines);
-    in
-    builtins.listToAttrs parsed;
+runCommand "kexec-menu-kernel-${arch}" {
+  nativeBuildInputs = [
+    flex bison bc perl elfutils openssl gnumake stdenv.cc
+    gzip cpio zstd python3 pkg-config
+  ];
+} ''
+  src="$TMPDIR/linux-src"
+  mkdir -p "$src"
+  tar -xf ${kernelSrc} -C "$src" --strip-components=1
 
-  commonConfig = parseConfigFile ./common.config;
-  archConfig = parseConfigFile (./. + "/${arch}.config");
+  mkdir -p "$out"
 
-  # Module names to build (extraModules are added as CONFIG_<name>=m)
-  moduleConfig = builtins.listToAttrs (map (m: {
-    name = m;
-    value = force module;
-  }) extraModules);
+  export KERNEL_SRC="$src"
+  export ARCH=${arch}
+  export CONFIG_DIR=${configDir}
+  export OUTPUT="$out/${imageName}"
+  ${lib.optionalString (initramfs != null) "export INITRAMFS=${initramfs}"}
+  ${lib.optionalString (cmdline != "") ''export CMDLINE="${cmdline}"''}
+  ${lib.optionalString (extraConfig != null) "export EXTRA_CONFIG=${extraConfig}"}
+  ${lib.optionalString (logo != null) "export LOGO=${logo}"}
 
-  # Embedded initramfs (for UKI builds)
-  initramfsConfig = lib.optionalAttrs (initramfs != null) {
-    BLK_DEV_INITRD = force yes;
-    INITRAMFS_SOURCE = force (freeform ''"${initramfs}"'');
-  };
-
-  # Embedded command line (for UKI builds)
-  cmdlineConfig = lib.optionalAttrs (cmdline != "") {
-    CMDLINE_BOOL = force yes;
-    CMDLINE = force (freeform ''"${cmdline}"'');
-  };
-
-  # Merge order: common → arch → extraModules → initramfs → cmdline → extraConfig (last wins)
-  mergedConfig = commonConfig // archConfig // moduleConfig
-    // initramfsConfig // cmdlineConfig // extraConfig;
-
-  kernel = (linuxPackages_latest.kernel.override {
-    # Start from tinyconfig instead of defconfig
-    autoModules = false;
-    # Disable module support — everything built-in
-    preferBuiltin = true;
-    structuredExtraConfig = mergedConfig;
-    # Suppress interactive config prompts for new options
-    ignoreConfigErrors = true;
-  }).overrideAttrs (old: lib.optionalAttrs (logo != null) {
-    postPatch = (old.postPatch or "") + ''
-      cp ${logo} drivers/video/logo/logo_linux_clut224.ppm
-    '';
-  });
-
-in kernel
+  bash ${../../scripts/mkkernel.sh}
+''

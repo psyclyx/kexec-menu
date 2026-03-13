@@ -39,6 +39,13 @@ let
 
   logo = pkgs.callPackage ./uki/logo/logo.nix {};
 
+  # Pinned kernel source — shared between x86_64 and aarch64 builds
+  kernelSource = import ./uki/kernel/source.nix;
+  kernelSrc = pkgs.fetchurl {
+    url = "https://cdn.kernel.org/pub/linux/kernel/v${builtins.head (builtins.split "\\." kernelSource.version)}.x/linux-${kernelSource.version}.tar.xz";
+    hash = kernelSource.hash;
+  };
+
   self = {
     # ── Binary ──────────────────────────────────────────────────────────
 
@@ -68,10 +75,12 @@ let
     # ── Kernel ──────────────────────────────────────────────────────────
 
     kernel-x86_64 = pkgs.callPackage ./uki/kernel/kernel.nix {
+      inherit kernelSrc;
       arch = "x86_64";
     };
 
     kernel-aarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./uki/kernel/kernel.nix {
+      inherit kernelSrc;
       arch = "aarch64";
     };
 
@@ -95,14 +104,16 @@ let
 
     uki-x86_64 = pkgs.callPackage ./uki/uki.nix {
       arch = "x86_64";
+      inherit kernelSrc;
       initrd = self.initrd-x86_64;
-      inherit logo;
+      logo = self.logo;
     };
 
     uki-aarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./uki/uki.nix {
       arch = "aarch64";
+      inherit kernelSrc;
       initrd = self.initrd-aarch64;
-      inherit logo;
+      logo = self.logo;
     };
 
     # ── Tests ───────────────────────────────────────────────────────────

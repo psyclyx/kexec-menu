@@ -18,26 +18,26 @@
 #
 # Args:
 #   arch         — "x86_64" or "aarch64"
+#   kernelSrc    — pre-fetched kernel source tarball
 #   initrd       — pre-built CPIO initrd archive (from initrd.nix)
 #   cmdline      — kernel command line to embed
-#   extraConfig  — additional kernel structuredExtraConfig attrs
-#   extraModules — additional kernel modules to enable
-#   logo         — path to 80x80 PPM boot logo (or null for default Tux)
+#   extraConfig  — path to additional config fragment file (or null)
+#   logo         — path to 80x80 PPM boot logo (or null)
 {
   lib,
   runCommand,
   callPackage,
   arch ? "x86_64",
+  kernelSrc,
   initrd,
   cmdline ? "console=tty0",
-  extraConfig ? {},
-  extraModules ? [],
+  extraConfig ? null,
   logo ? null,
 }:
 
 let
   kernel = callPackage ./kernel/kernel.nix {
-    inherit arch extraConfig extraModules logo;
+    inherit arch kernelSrc extraConfig logo;
     initramfs = initrd;
     inherit cmdline;
   };
