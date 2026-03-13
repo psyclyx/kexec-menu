@@ -30,7 +30,7 @@ set -eu
 
 die() { echo "mkkernel: error: $1" >&2; exit 1; }
 
-KERNEL_VERSION="${KERNEL_VERSION:-6.12.6}"
+KERNEL_VERSION="${KERNEL_VERSION:-6.12.76}"
 ARCH="${ARCH:-x86_64}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 1)}"
 

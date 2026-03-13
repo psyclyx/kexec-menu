@@ -4,6 +4,6 @@
 # KERNEL_VERSION variable that must be kept in sync (kernel updates are rare
 # and deliberate).
 {
-  version = "6.12.6";
-  hash = "sha256-1FCrIV3k4fi7heD0IWdg+jP9AktFJrFE9M4NkBKynJ4=";
+  version = "6.12.76";
+  hash = "sha256-u7Q+g0xG5r1JpcKPIuZ5qTdENATh9lMgTUskkp862JY=";
 }
