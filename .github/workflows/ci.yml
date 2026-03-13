@@ -22,41 +22,72 @@ jobs:
       - name: test
         run: nix-shell --run "cargo test --workspace --target x86_64-unknown-linux-musl"
 
-  build:
+  build-x86_64:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - attr: uki-x86_64
-            artifact: kexec-menu-x86_64.efi
-          - attr: uki-aarch64
-            artifact: kexec-menu-aarch64.efi
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
 
-      - name: build
-        run: nix-build -A ${{ matrix.attr }} -o result
+      - name: binary
+        run: nix-build -A kexec-menu -o result-bin
+
+      - name: logo
+        run: nix-build -A logo -o result-logo
+
+      - name: kernel
+        run: nix-build -A kernel-x86_64 -o result-kernel
+
+      - name: initrd
+        run: nix-build -A initrd-x86_64 -o result-initrd
+
+      - name: uki
+        run: nix-build -A uki-x86_64 -o result-uki
 
       - name: stage artifacts
         run: |
           mkdir -p artifacts
-          cp result artifacts/${{ matrix.artifact }}
-          # Also extract the standalone binary from the nix store
-          bin_attr="${{ matrix.attr == 'uki-x86_64' && 'kexec-menu' || 'kexec-menu-aarch64' }}"
-          nix-build -A "$bin_attr" -o result-bin
-          bin_name="${{ matrix.attr == 'uki-x86_64' && 'kexec-menu-x86_64' || 'kexec-menu-aarch64' }}"
-          cp result-bin/bin/kexec-menu "artifacts/$bin_name"
+          cp result-bin/bin/kexec-menu artifacts/kexec-menu-x86_64
+          cp result-uki artifacts/kexec-menu-x86_64.efi
 
       - name: upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: x86_64
+          path: artifacts/
+
+  build-aarch64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+
+      - name: binary
+        run: nix-build -A kexec-menu-aarch64 -o result-bin
+
+      - name: kernel
+        run: nix-build -A kernel-aarch64 -o result-kernel
+
+      - name: initrd
+        run: nix-build -A initrd-aarch64 -o result-initrd
+
+      - name: uki
+        run: nix-build -A uki-aarch64 -o result-uki
+
+      - name: stage artifacts
+        run: |
+          mkdir -p artifacts
+          cp result-bin/bin/kexec-menu artifacts/kexec-menu-aarch64
+          cp result-uki artifacts/kexec-menu-aarch64.efi
+
+      - name: upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aarch64
           path: artifacts/
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, build]
+    needs: [check, build-x86_64, build-aarch64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -74,7 +105,7 @@ jobs:
 
   dev:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [check, build]
+    needs: [check, build-x86_64, build-aarch64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
