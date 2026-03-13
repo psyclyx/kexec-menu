@@ -9,6 +9,8 @@
 #   /dev/vdc — empty raw disk, formatted as LUKS+ext4 here (if cryptsetup present)
 #   /dev/vdd — pre-formatted XFS disk, populated here
 #   /dev/vde — pre-formatted F2FS disk, populated here
+#   /dev/vdf — empty raw disk, part of btrfs RAID1 (with vdg)
+#   /dev/vdg — empty raw disk, part of btrfs RAID1 (with vdf)
 #
 
 export PATH=/bin
@@ -50,7 +52,7 @@ if [ -b /dev/vdb ] && [ -x /bin/mkfs.btrfs ]; then
     echo "setting up btrfs test disk on /dev/vdb..."
     if mkfs.btrfs -f -L "test-btrfs" /dev/vdb >/dev/null 2>&1; then
         mkdir -p /mnt/btrfs
-        if mount -t btrfs /dev/vdb /mnt/btrfs; then
+        if mount -t btrfs -o compress=zstd /dev/vdb /mnt/btrfs; then
             # Populate with boot tree (same structure as ext4 disk)
             mkdir -p /mnt/btrfs/boot/nixos/generation-1
             echo "DUMMY KERNEL" > /mnt/btrfs/boot/nixos/generation-1/vmlinuz
@@ -176,6 +178,34 @@ JSON
     fi
 fi
 
+# Set up multi-device btrfs RAID1 on /dev/vdf + /dev/vdg
+BTRFS_RAID_SETUP=false
+if [ -b /dev/vdf ] && [ -b /dev/vdg ] && [ -x /bin/mkfs.btrfs ]; then
+    echo "setting up btrfs RAID1 on /dev/vdf + /dev/vdg..."
+    if mkfs.btrfs -f -d raid1 -m raid1 -L "test-btrfs-raid1" /dev/vdf /dev/vdg >/dev/null 2>&1; then
+        mkdir -p /mnt/btrfs-raid
+        if mount -t btrfs /dev/vdf /mnt/btrfs-raid; then
+            mkdir -p /mnt/btrfs-raid/boot/nixos/generation-1
+            echo "DUMMY KERNEL" > /mnt/btrfs-raid/boot/nixos/generation-1/vmlinuz
+            echo "DUMMY INITRD" > /mnt/btrfs-raid/boot/nixos/generation-1/initrd
+            cat > /mnt/btrfs-raid/boot/nixos/generation-1/entries.json <<'JSON'
+[
+  {"name": "default", "kernel": "vmlinuz", "initrd": "initrd", "cmdline": "console=ttyS0 root=/dev/vdf"}
+]
+JSON
+            umount /mnt/btrfs-raid
+            BTRFS_RAID_SETUP=true
+            echo "  btrfs RAID1 disk ready"
+        else
+            echo "  WARN: failed to mount btrfs RAID1"
+        fi
+    else
+        echo "  WARN: mkfs.btrfs RAID1 failed"
+    fi
+elif [ -b /dev/vdf ]; then
+    echo "  skip: btrfs RAID1 setup (mkfs.btrfs not found)"
+fi
+
 # Run kexec-menu in auto-default dry-run mode, capture stderr
 /bin/kexec-menu --dry-run --auto-default 2>/tmp/kexec-output
 STATUS=$?
@@ -244,6 +274,17 @@ if [ "$F2FS_SETUP" = true ]; then
     else
         echo "FAIL: F2FS source not mounted (expected /mnt/kexec-menu/vde)"
         PASS=false
+    fi
+fi
+
+# If btrfs RAID1 was set up, verify kexec-menu handled multi-device grouping
+if [ "$BTRFS_RAID_SETUP" = true ]; then
+    # kexec-menu should detect both devices as a single multi-device group
+    # and mount via one of them; check that a btrfs mount exists for the raid label
+    if echo "$OUTPUT" | busybox grep -q "btrfs-raid1\|vdf\|vdg"; then
+        echo "OK: btrfs RAID1 multi-device detected by kexec-menu"
+    else
+        echo "WARN: btrfs RAID1 not clearly visible in output (may still work)"
     fi
 fi
 

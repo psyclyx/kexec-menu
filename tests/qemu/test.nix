@@ -71,6 +71,11 @@ pkgs.writeShellApplication {
     F2FS_DISK="$BUILD_DIR/test-disk-f2fs.raw"
     truncate -s 64M "$F2FS_DISK"
     mkfs.f2fs -f -l "test-f2fs" "$F2FS_DISK"
+    # Two 64MB disks for multi-device btrfs RAID1 test
+    BTRFS_RAID1_A="$BUILD_DIR/test-disk-btrfs-raid1a.raw"
+    BTRFS_RAID1_B="$BUILD_DIR/test-disk-btrfs-raid1b.raw"
+    truncate -s 64M "$BTRFS_RAID1_A"
+    truncate -s 64M "$BTRFS_RAID1_B"
 
     # --- Create initrd ---
     INITRD="$BUILD_DIR/initrd-test.cpio"
@@ -164,6 +169,8 @@ pkgs.writeShellApplication {
             -drive "file=$LUKS_DISK,format=raw,if=virtio" \
             -drive "file=$XFS_DISK,format=raw,if=virtio" \
             -drive "file=$F2FS_DISK,format=raw,if=virtio" \
+            -drive "file=$BTRFS_RAID1_A,format=raw,if=virtio" \
+            -drive "file=$BTRFS_RAID1_B,format=raw,if=virtio" \
             -cpu max \
             -m 512M \
             -nographic \
