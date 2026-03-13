@@ -261,4 +261,72 @@ mod tests {
         assert_eq!(sel.leaf_path, PathBuf::from("/mnt/boot/nixos/gen1"));
         assert_eq!(sel.entry_name, "gaming");
     }
+
+    // --- T6: single entry default ---
+
+    #[test]
+    fn single_entry_default() {
+        // 1 source, 1 generation, 1 entry → that entry must be the default
+        let trees = vec![source("only-disk", vec![
+            leaf("/mnt/boot/gen1", &["the-only-one"], 42),
+        ])];
+        let sel = resolve_default(&trees, None).unwrap();
+        assert_eq!(sel.leaf_path, PathBuf::from("/mnt/boot/gen1"));
+        assert_eq!(sel.entry_name, "the-only-one");
+    }
+
+    // --- T7: multi source default ---
+
+    #[test]
+    fn multi_source_default() {
+        // 3 sources with different generation counts and mtimes.
+        // The globally newest leaf should win regardless of source.
+        let trees = vec![
+            source("disk-a", vec![
+                leaf("/mnt1/boot/gen1", &["a1"], 100),
+                leaf("/mnt1/boot/gen2", &["a2"], 200),
+                leaf("/mnt1/boot/gen3", &["a3"], 300),
+            ]),
+            source("disk-b", vec![
+                leaf("/mnt2/boot/gen1", &["b1"], 500), // newest globally
+            ]),
+            source("disk-c", vec![
+                leaf("/mnt3/boot/gen1", &["c1"], 50),
+                leaf("/mnt3/boot/gen2", &["c2"], 150),
+            ]),
+        ];
+        let sel = resolve_default(&trees, None).unwrap();
+        assert_eq!(sel.leaf_path, PathBuf::from("/mnt2/boot/gen1"));
+        assert_eq!(sel.entry_name, "b1");
+    }
+
+    #[test]
+    fn multi_source_default_nested() {
+        // Sources with nested Dir trees — verify collect_leaves recurses properly
+        let trees = vec![
+            source("disk-a", vec![
+                TreeNode::Dir {
+                    name: "nixos".into(),
+                    children: vec![
+                        leaf("/mnt1/boot/nixos/gen1", &["default"], 100),
+                        leaf("/mnt1/boot/nixos/gen2", &["default"], 200),
+                    ],
+                },
+            ]),
+            source("disk-b", vec![
+                TreeNode::Dir {
+                    name: "nixos".into(),
+                    children: vec![
+                        leaf("/mnt2/boot/nixos/gen1", &["default"], 400), // newest
+                    ],
+                },
+            ]),
+            source("disk-c", vec![
+                leaf("/mnt3/boot/gen1", &["flat"], 50),
+            ]),
+        ];
+        let sel = resolve_default(&trees, None).unwrap();
+        assert_eq!(sel.leaf_path, PathBuf::from("/mnt2/boot/nixos/gen1"));
+        assert_eq!(sel.entry_name, "default");
+    }
 }
