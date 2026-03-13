@@ -50,10 +50,8 @@ See [NixOS module options](#nixos-module-options) for full configuration.
 
 ### Arch Linux
 
-A `PKGBUILD` is included (static binary only). The UKI requires additional
-components; see [UKI](#uki).
-
-    makepkg -si
+A `PKGBUILD` is included for the standalone binary. For the full UKI, use
+Nix or the Makefile (see [Building](#building)).
 
 ### Manual
 
@@ -66,27 +64,10 @@ Copy `kexec-menu.efi` to the ESP and add a UEFI boot entry:
 
 With Nix:
 
-    nix-build                          # x86_64 static binary
-    nix-build -A kexec-menu-aarch64    # aarch64 cross-compile
-
-Without Nix (Rust toolchain + musl targets):
-
-    make            # x86_64
-    make aarch64    # aarch64
-    make all        # both
-
-### UKI
-
-With Nix:
-
     nix-build -A uki-x86_64
     nix-build -A uki-aarch64
-    nix-build -A kernel-x86_64    # individual components
-    nix-build -A initrd-x86_64
-    nix-build -A logo
 
-Without Nix (kernel source, static tool binaries, cross toolchain for
-aarch64):
+Without Nix (Rust toolchain, kernel source, static tool binaries):
 
     make uki ARCH=x86_64 \
       KERNEL_SRC=~/linux-6.12 \
@@ -94,24 +75,14 @@ aarch64):
       CRYPTSETUP=/path/to/cryptsetup-static \
       BCACHEFS=/path/to/bcachefs-static
 
-Full pipeline: binary → initrd → kernel → UKI. Output: `build/kexec-menu.efi`.
+Output: `build/kexec-menu.efi`. Full pipeline: binary → initrd → kernel
+(with embedded initrd) → EFI binary.
 
-Individual steps:
+Non-Nix prerequisites: Rust with musl target, kernel source,
+static busybox/cryptsetup/bcachefs-tools, make/gcc/flex/bison/bc/perl,
+cpio, awk. aarch64 cross-builds: `aarch64-linux-gnu-gcc`.
 
-    make logo                              # build/logo.ppm
-    make initrd ARCH=x86_64 BUSYBOX=... CRYPTSETUP=... BCACHEFS=...
-    make kernel ARCH=x86_64 KERNEL_SRC=~/linux-6.12
-
-#### Prerequisites
-
-- Rust toolchain with musl target (`rustup target add x86_64-unknown-linux-musl`)
-- Kernel source tree (e.g. linux-6.12)
-- Static binaries: busybox, cryptsetup, bcachefs-tools
-- Kernel build deps: make, gcc, flex, bison, bc, perl
-- cpio, awk
-- aarch64 cross-builds: `aarch64-linux-gnu-gcc`
-
-#### Build variables
+### Build variables
 
 | Variable | Description |
 |---|---|
