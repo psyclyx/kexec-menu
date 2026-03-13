@@ -82,9 +82,15 @@ const EXT_SUPER_OFFSET: u64 = 1024 + 0x38;
 const EXT_MAGIC: [u8; 2] = [0x53, 0xEF]; // little-endian 0xEF53
 
 #[cfg(feature = "fs-btrfs")]
-const BTRFS_MAGIC_OFFSET: u64 = 0x10040;
+const BTRFS_SB_START: u64 = 0x10000;
+#[cfg(feature = "fs-btrfs")]
+const BTRFS_MAGIC_OFFSET: u64 = BTRFS_SB_START + 0x40;
 #[cfg(feature = "fs-btrfs")]
 const BTRFS_MAGIC: &[u8] = b"_BHRfS_M";
+#[cfg(feature = "fs-btrfs")]
+const BTRFS_FSID_OFFSET: u64 = BTRFS_SB_START + 0x20; // fsid UUID (16 bytes)
+#[cfg(feature = "fs-btrfs")]
+const BTRFS_NUM_DEVICES_OFFSET: u64 = BTRFS_SB_START + 0x88; // __le64
 
 #[cfg(feature = "fs-bcachefs")]
 const BCACHEFS_SB_START: u64 = 0x1000; // sector 8
@@ -92,6 +98,10 @@ const BCACHEFS_SB_START: u64 = 0x1000; // sector 8
 const BCACHEFS_SUPER_OFFSET: u64 = BCACHEFS_SB_START + 0x18; // magic field
 #[cfg(feature = "fs-bcachefs")]
 const BCACHEFS_MAGIC: [u8; 4] = [0xf6, 0x73, 0x85, 0xc6]; // little-endian 0xc68573f6
+#[cfg(feature = "fs-bcachefs")]
+const BCACHEFS_UUID_OFFSET: u64 = BCACHEFS_SB_START + 0x28; // fs UUID (16 bytes)
+#[cfg(feature = "fs-bcachefs")]
+const BCACHEFS_DEV_IDX_OFFSET: u64 = BCACHEFS_SB_START + 0x7A; // dev_idx(u8) + nr_devices(u8)
 
 #[cfg(feature = "fs-xfs")]
 const XFS_MAGIC: &[u8] = b"XFSB";
@@ -260,6 +270,87 @@ pub fn label_from_bytes(buf: &[u8]) -> Option<String> {
     let s = std::str::from_utf8(&buf[..end]).ok()?;
     let trimmed = s.trim();
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+}
+
+// --- Multi-device info from superblock ---
+
+/// Information about a device's membership in a multi-device filesystem.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MultiDeviceInfo {
+    /// Filesystem UUID (ties devices together).
+    pub fs_uuid: [u8; 16],
+    /// Total number of devices in the filesystem.
+    pub nr_devices: u32,
+    /// This device's index in the set (0-based for bcachefs, 0 for btrfs).
+    pub dev_idx: u32,
+}
+
+/// Read multi-device membership info from a superblock.
+///
+/// Returns `None` for single-device filesystems or filesystem types
+/// that don't support multi-device (ext4, XFS, F2FS, LUKS).
+#[allow(unreachable_patterns, unused_mut, unused_variables)]
+pub fn read_multi_device_info(dev: &Path, fstype: FsType) -> Result<Option<MultiDeviceInfo>> {
+    match fstype {
+        #[cfg(feature = "fs-bcachefs")]
+        FsType::Bcachefs => read_bcachefs_multi_device(dev),
+        #[cfg(feature = "fs-btrfs")]
+        FsType::Btrfs => read_btrfs_multi_device(dev),
+        _ => Ok(None),
+    }
+}
+
+#[cfg(feature = "fs-bcachefs")]
+fn read_bcachefs_multi_device(dev: &Path) -> Result<Option<MultiDeviceInfo>> {
+    let mut f = fs::File::open(dev)?;
+
+    // Read fs UUID (16 bytes at BCACHEFS_UUID_OFFSET)
+    let mut uuid = [0u8; 16];
+    f.seek(SeekFrom::Start(BCACHEFS_UUID_OFFSET))?;
+    f.read_exact(&mut uuid)?;
+
+    // Read dev_idx (1 byte) and nr_devices (1 byte)
+    f.seek(SeekFrom::Start(BCACHEFS_DEV_IDX_OFFSET))?;
+    let mut buf = [0u8; 2];
+    f.read_exact(&mut buf)?;
+    let dev_idx = buf[0] as u32;
+    let nr_devices = buf[1] as u32;
+
+    if nr_devices <= 1 {
+        return Ok(None);
+    }
+
+    Ok(Some(MultiDeviceInfo {
+        fs_uuid: uuid,
+        nr_devices,
+        dev_idx,
+    }))
+}
+
+#[cfg(feature = "fs-btrfs")]
+fn read_btrfs_multi_device(dev: &Path) -> Result<Option<MultiDeviceInfo>> {
+    let mut f = fs::File::open(dev)?;
+
+    // Read fsid (16 bytes at BTRFS_FSID_OFFSET)
+    let mut uuid = [0u8; 16];
+    f.seek(SeekFrom::Start(BTRFS_FSID_OFFSET))?;
+    f.read_exact(&mut uuid)?;
+
+    // Read num_devices (u64 LE at BTRFS_NUM_DEVICES_OFFSET)
+    f.seek(SeekFrom::Start(BTRFS_NUM_DEVICES_OFFSET))?;
+    let mut buf = [0u8; 8];
+    f.read_exact(&mut buf)?;
+    let num_devices = u64::from_le_bytes(buf);
+
+    if num_devices <= 1 {
+        return Ok(None);
+    }
+
+    Ok(Some(MultiDeviceInfo {
+        fs_uuid: uuid,
+        nr_devices: num_devices as u32,
+        dev_idx: 0, // btrfs doesn't have a fixed device index in the superblock
+    }))
 }
 
 // --- Block device enumeration ---
@@ -796,6 +887,105 @@ mod tests {
         let mut f = fs::OpenOptions::new().write(true).open(path).unwrap();
         f.seek(SeekFrom::Start(offset)).unwrap();
         f.write_all(data).unwrap();
+    }
+
+    // --- multi-device info tests ---
+
+    #[cfg(feature = "fs-bcachefs")]
+    #[test]
+    fn multi_device_bcachefs_two_devices() {
+        let tmp = test_device(0x1000 + 0x7C); // must cover nr_devices at 0x107B
+        // Write bcachefs magic so it's a valid superblock
+        write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
+        // Write a test UUID
+        let uuid = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        write_at(&tmp, BCACHEFS_UUID_OFFSET, &uuid);
+        // dev_idx=0, nr_devices=2
+        write_at(&tmp, BCACHEFS_DEV_IDX_OFFSET, &[0, 2]);
+
+        let info = read_multi_device_info(&tmp, FsType::Bcachefs).unwrap();
+        let info = info.expect("should return Some for multi-device");
+        assert_eq!(info.fs_uuid, uuid);
+        assert_eq!(info.nr_devices, 2);
+        assert_eq!(info.dev_idx, 0);
+    }
+
+    #[cfg(feature = "fs-bcachefs")]
+    #[test]
+    fn multi_device_bcachefs_second_device() {
+        let tmp = test_device(0x1000 + 0x7C);
+        write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
+        let uuid = [0xAA; 16];
+        write_at(&tmp, BCACHEFS_UUID_OFFSET, &uuid);
+        // dev_idx=1, nr_devices=3
+        write_at(&tmp, BCACHEFS_DEV_IDX_OFFSET, &[1, 3]);
+
+        let info = read_multi_device_info(&tmp, FsType::Bcachefs).unwrap().unwrap();
+        assert_eq!(info.fs_uuid, uuid);
+        assert_eq!(info.nr_devices, 3);
+        assert_eq!(info.dev_idx, 1);
+    }
+
+    #[cfg(feature = "fs-bcachefs")]
+    #[test]
+    fn multi_device_bcachefs_single_returns_none() {
+        let tmp = test_device(0x1000 + 0x7C);
+        write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
+        // dev_idx=0, nr_devices=1
+        write_at(&tmp, BCACHEFS_DEV_IDX_OFFSET, &[0, 1]);
+
+        let info = read_multi_device_info(&tmp, FsType::Bcachefs).unwrap();
+        assert!(info.is_none(), "single device should return None");
+    }
+
+    #[cfg(feature = "fs-btrfs")]
+    #[test]
+    fn multi_device_btrfs_two_devices() {
+        let tmp = test_device(0x10090); // must cover num_devices at 0x10088
+        // Write btrfs magic
+        write_at(&tmp, BTRFS_MAGIC_OFFSET, BTRFS_MAGIC);
+        // Write fsid UUID
+        let uuid = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
+                     0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0, 0x01];
+        write_at(&tmp, BTRFS_FSID_OFFSET, &uuid);
+        // num_devices = 2 (u64 LE)
+        write_at(&tmp, BTRFS_NUM_DEVICES_OFFSET, &2u64.to_le_bytes());
+
+        let info = read_multi_device_info(&tmp, FsType::Btrfs).unwrap();
+        let info = info.expect("should return Some for multi-device");
+        assert_eq!(info.fs_uuid, uuid);
+        assert_eq!(info.nr_devices, 2);
+        assert_eq!(info.dev_idx, 0);
+    }
+
+    #[cfg(feature = "fs-btrfs")]
+    #[test]
+    fn multi_device_btrfs_single_returns_none() {
+        let tmp = test_device(0x10090);
+        write_at(&tmp, BTRFS_MAGIC_OFFSET, BTRFS_MAGIC);
+        // num_devices = 1
+        write_at(&tmp, BTRFS_NUM_DEVICES_OFFSET, &1u64.to_le_bytes());
+
+        let info = read_multi_device_info(&tmp, FsType::Btrfs).unwrap();
+        assert!(info.is_none(), "single device should return None");
+    }
+
+    #[cfg(feature = "fs-ext4")]
+    #[test]
+    fn multi_device_ext4_returns_none() {
+        let tmp = test_device(2048);
+        write_at(&tmp, EXT_SUPER_OFFSET, &EXT_MAGIC);
+        let info = read_multi_device_info(&tmp, FsType::Ext4).unwrap();
+        assert!(info.is_none(), "ext4 doesn't support multi-device");
+    }
+
+    #[cfg(feature = "fs-xfs")]
+    #[test]
+    fn multi_device_xfs_returns_none() {
+        let tmp = test_device(2048);
+        write_at(&tmp, 0, XFS_MAGIC);
+        let info = read_multi_device_info(&tmp, FsType::Xfs).unwrap();
+        assert!(info.is_none(), "XFS doesn't support multi-device");
     }
 
     // --- disk-whitelist pattern matching tests ---
