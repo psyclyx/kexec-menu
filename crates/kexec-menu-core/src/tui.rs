@@ -499,9 +499,8 @@ impl TreeView {
             match &node.kind {
                 NodeKind::Entry { .. } => return false, // entries don't toggle
                 NodeKind::Source {
-                    state: NodeSourceState::Encrypted
-                    | NodeSourceState::Error(_)
-                    | NodeSourceState::Empty,
+                    state:
+                        NodeSourceState::Encrypted | NodeSourceState::Error(_) | NodeSourceState::Empty,
                     ..
                 } => return false,
                 _ => {}
