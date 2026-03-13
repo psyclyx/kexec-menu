@@ -98,10 +98,6 @@ const BCACHEFS_SB_START: u64 = 0x1000; // sector 8
 const BCACHEFS_SUPER_OFFSET: u64 = BCACHEFS_SB_START + 0x18; // magic field
 #[cfg(feature = "fs-bcachefs")]
 const BCACHEFS_MAGIC: [u8; 4] = [0xf6, 0x73, 0x85, 0xc6]; // little-endian 0xc68573f6
-#[cfg(feature = "fs-bcachefs")]
-const BCACHEFS_UUID_OFFSET: u64 = BCACHEFS_SB_START + 0x28; // fs UUID (16 bytes)
-#[cfg(feature = "fs-bcachefs")]
-const BCACHEFS_DEV_IDX_OFFSET: u64 = BCACHEFS_SB_START + 0x7A; // dev_idx(u8) + nr_devices(u8)
 
 #[cfg(feature = "fs-xfs")]
 const XFS_MAGIC: &[u8] = b"XFSB";
@@ -226,9 +222,14 @@ fn read_btrfs_label(f: &mut fs::File) -> Result<Option<String>> {
 #[cfg(feature = "fs-bcachefs")]
 fn read_bcachefs_label(f: &mut fs::File) -> Result<Option<String>> {
     // bcachefs label: 32 bytes at sb_start + 0x48
-    f.seek(SeekFrom::Start(BCACHEFS_SB_START + 0x48))?;
+    // Offset may shift with superblock format changes; fail gracefully.
+    if f.seek(SeekFrom::Start(BCACHEFS_SB_START + 0x48)).is_err() {
+        return Ok(None);
+    }
     let mut buf = [0u8; 32];
-    f.read_exact(&mut buf)?;
+    if f.read_exact(&mut buf).is_err() {
+        return Ok(None);
+    }
     Ok(label_from_bytes(&buf))
 }
 
@@ -292,39 +293,10 @@ pub struct MultiDeviceInfo {
 #[allow(unreachable_patterns, unused_mut, unused_variables)]
 pub fn read_multi_device_info(dev: &Path, fstype: FsType) -> Result<Option<MultiDeviceInfo>> {
     match fstype {
-        #[cfg(feature = "fs-bcachefs")]
-        FsType::Bcachefs => read_bcachefs_multi_device(dev),
         #[cfg(feature = "fs-btrfs")]
         FsType::Btrfs => read_btrfs_multi_device(dev),
         _ => Ok(None),
     }
-}
-
-#[cfg(feature = "fs-bcachefs")]
-fn read_bcachefs_multi_device(dev: &Path) -> Result<Option<MultiDeviceInfo>> {
-    let mut f = fs::File::open(dev)?;
-
-    // Read fs UUID (16 bytes at BCACHEFS_UUID_OFFSET)
-    let mut uuid = [0u8; 16];
-    f.seek(SeekFrom::Start(BCACHEFS_UUID_OFFSET))?;
-    f.read_exact(&mut uuid)?;
-
-    // Read dev_idx (1 byte) and nr_devices (1 byte)
-    f.seek(SeekFrom::Start(BCACHEFS_DEV_IDX_OFFSET))?;
-    let mut buf = [0u8; 2];
-    f.read_exact(&mut buf)?;
-    let dev_idx = buf[0] as u32;
-    let nr_devices = buf[1] as u32;
-
-    if nr_devices <= 1 {
-        return Ok(None);
-    }
-
-    Ok(Some(MultiDeviceInfo {
-        fs_uuid: uuid,
-        nr_devices,
-        dev_idx,
-    }))
 }
 
 #[cfg(feature = "fs-btrfs")]
@@ -607,14 +579,11 @@ fn path_to_cstring(p: &Path) -> Result<CString> {
 
 /// Mount a multi-device filesystem group read-only.
 ///
-/// For bcachefs: passes all devices as a colon-separated source string.
 /// For btrfs: runs `btrfs device scan` on each member, then mounts the first.
 ///
 /// Returns the mount point on success, or an error.
 pub fn mount_group_ro(group: &DeviceGroup) -> Result<PathBuf> {
     match group.fstype {
-        #[cfg(feature = "fs-bcachefs")]
-        FsType::Bcachefs => mount_bcachefs_group(group),
         #[cfg(feature = "fs-btrfs")]
         FsType::Btrfs => mount_btrfs_group(group),
         _ => Err(Error::Parse(format!(
@@ -622,87 +591,6 @@ pub fn mount_group_ro(group: &DeviceGroup) -> Result<PathBuf> {
             group.fstype.as_str()
         ))),
     }
-}
-
-/// Mount a multi-device bcachefs filesystem.
-/// bcachefs mount accepts "dev1:dev2:dev3" as the source device.
-#[cfg(feature = "fs-bcachefs")]
-fn mount_bcachefs_group(group: &DeviceGroup) -> Result<PathBuf> {
-    // Build colon-separated device string
-    let dev_str: String = group.devices.iter()
-        .map(|(p, _)| p.to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join(":");
-
-    // Use first device name for mount point
-    let first_name = group.devices.first()
-        .and_then(|(p, _)| p.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let mount_point = PathBuf::from(MOUNT_BASE).join(format!("{first_name}-multi"));
-    fs::create_dir_all(&mount_point)?;
-
-    let c_dev = CString::new(dev_str.as_bytes())
-        .map_err(|_| Error::Parse("device string contains NUL byte".into()))?;
-    let c_target = path_to_cstring(&mount_point)?;
-    let c_fstype = CString::new("bcachefs").unwrap();
-
-    let ret = unsafe {
-        libc::mount(
-            c_dev.as_ptr(),
-            c_target.as_ptr(),
-            c_fstype.as_ptr(),
-            libc::MS_RDONLY,
-            std::ptr::null(),
-        )
-    };
-
-    if ret != 0 {
-        return Err(Error::Io(io::Error::last_os_error()));
-    }
-
-    Ok(mount_point)
-}
-
-/// Mount an incomplete bcachefs group in degraded mode.
-/// Uses `-o degraded,ro` to allow mounting with missing devices.
-#[cfg(feature = "fs-bcachefs")]
-fn mount_bcachefs_group_degraded(group: &DeviceGroup) -> Result<PathBuf> {
-    let dev_str: String = group.devices.iter()
-        .map(|(p, _)| p.to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join(":");
-
-    let first_name = group.devices.first()
-        .and_then(|(p, _)| p.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let mount_point = PathBuf::from(MOUNT_BASE).join(format!("{first_name}-multi"));
-    fs::create_dir_all(&mount_point)?;
-
-    let c_dev = CString::new(dev_str.as_bytes())
-        .map_err(|_| Error::Parse("device string contains NUL byte".into()))?;
-    let c_target = path_to_cstring(&mount_point)?;
-    let c_fstype = CString::new("bcachefs").unwrap();
-    let c_opts = CString::new("degraded").unwrap();
-
-    let ret = unsafe {
-        libc::mount(
-            c_dev.as_ptr(),
-            c_target.as_ptr(),
-            c_fstype.as_ptr(),
-            libc::MS_RDONLY,
-            c_opts.as_ptr() as *const libc::c_void,
-        )
-    };
-
-    if ret != 0 {
-        return Err(Error::Io(io::Error::last_os_error()));
-    }
-
-    Ok(mount_point)
 }
 
 /// Mount a multi-device btrfs filesystem.
@@ -921,34 +809,6 @@ pub fn discover_sources() -> Result<Vec<Source>> {
     for group in &groups {
         let label = format_group_label(group, &devices);
         if !group.is_complete() {
-            // Try degraded mount for bcachefs; btrfs stays as error
-            #[cfg(feature = "fs-bcachefs")]
-            if group.fstype == FsType::Bcachefs {
-                match mount_bcachefs_group_degraded(group) {
-                    Ok(mp) => {
-                        sources.push(Source {
-                            label,
-                            device: group.devices[0].0.clone(),
-                            state: SourceState::Mounted,
-                            mount_point: Some(mp),
-                            passphrase: None,
-                        });
-                        continue;
-                    }
-                    #[cfg(feature = "fs-bcachefs")]
-                    Err(Error::Io(ref e)) if e.raw_os_error() == Some(ENOKEY) => {
-                        sources.push(Source {
-                            label,
-                            device: group.devices[0].0.clone(),
-                            state: SourceState::Encrypted,
-                            mount_point: None,
-                            passphrase: None,
-                        });
-                        continue;
-                    }
-                    Err(_) => {} // fall through to incomplete error
-                }
-            }
             sources.push(Source {
                 label,
                 device: group.devices[0].0.clone(),
@@ -970,19 +830,6 @@ pub fn discover_sources() -> Result<Vec<Source>> {
                     device: group.devices[0].0.clone(),
                     state: SourceState::Mounted,
                     mount_point: Some(mp),
-                    passphrase: None,
-                });
-            }
-            #[cfg(feature = "fs-bcachefs")]
-            Err(Error::Io(ref e))
-                if group.fstype == FsType::Bcachefs
-                    && e.raw_os_error() == Some(ENOKEY) =>
-            {
-                sources.push(Source {
-                    label,
-                    device: group.devices[0].0.clone(),
-                    state: SourceState::Encrypted,
-                    mount_point: None,
                     passphrase: None,
                 });
             }
@@ -1318,49 +1165,12 @@ mod tests {
 
     #[cfg(feature = "fs-bcachefs")]
     #[test]
-    fn multi_device_bcachefs_two_devices() {
-        let tmp = test_device(0x1000 + 0x7C); // must cover nr_devices at 0x107B
-        // Write bcachefs magic so it's a valid superblock
-        write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
-        // Write a test UUID
-        let uuid = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        write_at(&tmp, BCACHEFS_UUID_OFFSET, &uuid);
-        // dev_idx=0, nr_devices=2
-        write_at(&tmp, BCACHEFS_DEV_IDX_OFFSET, &[0, 2]);
-
-        let info = read_multi_device_info(&tmp, FsType::Bcachefs).unwrap();
-        let info = info.expect("should return Some for multi-device");
-        assert_eq!(info.fs_uuid, uuid);
-        assert_eq!(info.nr_devices, 2);
-        assert_eq!(info.dev_idx, 0);
-    }
-
-    #[cfg(feature = "fs-bcachefs")]
-    #[test]
-    fn multi_device_bcachefs_second_device() {
+    fn multi_device_bcachefs_returns_none() {
+        // bcachefs is treated as single-device; kernel handles assembly
         let tmp = test_device(0x1000 + 0x7C);
         write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
-        let uuid = [0xAA; 16];
-        write_at(&tmp, BCACHEFS_UUID_OFFSET, &uuid);
-        // dev_idx=1, nr_devices=3
-        write_at(&tmp, BCACHEFS_DEV_IDX_OFFSET, &[1, 3]);
-
-        let info = read_multi_device_info(&tmp, FsType::Bcachefs).unwrap().unwrap();
-        assert_eq!(info.fs_uuid, uuid);
-        assert_eq!(info.nr_devices, 3);
-        assert_eq!(info.dev_idx, 1);
-    }
-
-    #[cfg(feature = "fs-bcachefs")]
-    #[test]
-    fn multi_device_bcachefs_single_returns_none() {
-        let tmp = test_device(0x1000 + 0x7C);
-        write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
-        // dev_idx=0, nr_devices=1
-        write_at(&tmp, BCACHEFS_DEV_IDX_OFFSET, &[0, 1]);
-
         let info = read_multi_device_info(&tmp, FsType::Bcachefs).unwrap();
-        assert!(info.is_none(), "single device should return None");
+        assert!(info.is_none(), "bcachefs should always return None");
     }
 
     #[cfg(feature = "fs-btrfs")]
@@ -1415,61 +1225,6 @@ mod tests {
 
     // --- device grouping tests ---
 
-    #[cfg(feature = "fs-bcachefs")]
-    #[test]
-    fn group_two_bcachefs_devices() {
-        let uuid = [0xAA; 16];
-        let probed = vec![
-            ProbeResult {
-                path: PathBuf::from("/dev/sda1"),
-                fstype: FsType::Bcachefs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
-            },
-            ProbeResult {
-                path: PathBuf::from("/dev/sdb1"),
-                fstype: FsType::Bcachefs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 1 }),
-            },
-        ];
-        let (groups, singles) = group_multi_device(probed);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(singles.len(), 0);
-        let g = &groups[0];
-        assert_eq!(g.fstype, FsType::Bcachefs);
-        assert_eq!(g.fs_uuid, uuid);
-        assert_eq!(g.nr_expected, 2);
-        assert!(g.is_complete());
-        assert_eq!(g.devices.len(), 2);
-        // Sorted by dev_idx
-        assert_eq!(g.devices[0], (PathBuf::from("/dev/sda1"), 0));
-        assert_eq!(g.devices[1], (PathBuf::from("/dev/sdb1"), 1));
-    }
-
-    #[cfg(feature = "fs-bcachefs")]
-    #[test]
-    fn group_incomplete_bcachefs() {
-        let uuid = [0xBB; 16];
-        let probed = vec![
-            ProbeResult {
-                path: PathBuf::from("/dev/sda1"),
-                fstype: FsType::Bcachefs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 3, dev_idx: 0 }),
-            },
-            ProbeResult {
-                path: PathBuf::from("/dev/sdb1"),
-                fstype: FsType::Bcachefs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 3, dev_idx: 2 }),
-            },
-        ];
-        let (groups, singles) = group_multi_device(probed);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(singles.len(), 0);
-        let g = &groups[0];
-        assert_eq!(g.nr_expected, 3);
-        assert!(!g.is_complete());
-        assert_eq!(g.devices.len(), 2);
-    }
-
     #[cfg(feature = "fs-btrfs")]
     #[test]
     fn group_two_btrfs_devices() {
@@ -1512,14 +1267,14 @@ mod tests {
         assert_eq!(singles.len(), 2);
     }
 
-    #[cfg(all(feature = "fs-bcachefs", feature = "fs-ext4"))]
+    #[cfg(all(feature = "fs-btrfs", feature = "fs-ext4"))]
     #[test]
     fn group_mixed_multi_and_single() {
         let uuid = [0xDD; 16];
         let probed = vec![
             ProbeResult {
                 path: PathBuf::from("/dev/sda1"),
-                fstype: FsType::Bcachefs,
+                fstype: FsType::Btrfs,
                 multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
             },
             ProbeResult {
@@ -1529,8 +1284,8 @@ mod tests {
             },
             ProbeResult {
                 path: PathBuf::from("/dev/sdc1"),
-                fstype: FsType::Bcachefs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 1 }),
+                fstype: FsType::Btrfs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
             },
         ];
         let (groups, singles) = group_multi_device(probed);
@@ -1540,15 +1295,15 @@ mod tests {
         assert!(groups[0].is_complete());
     }
 
-    #[cfg(all(feature = "fs-bcachefs", feature = "fs-btrfs"))]
+    #[cfg(feature = "fs-btrfs")]
     #[test]
-    fn group_two_separate_multi_filesystems() {
+    fn group_two_separate_btrfs_filesystems() {
         let uuid_a = [0x11; 16];
         let uuid_b = [0x22; 16];
         let probed = vec![
             ProbeResult {
                 path: PathBuf::from("/dev/sda1"),
-                fstype: FsType::Bcachefs,
+                fstype: FsType::Btrfs,
                 multi: Some(MultiDeviceInfo { fs_uuid: uuid_a, nr_devices: 2, dev_idx: 0 }),
             },
             ProbeResult {
@@ -1558,8 +1313,8 @@ mod tests {
             },
             ProbeResult {
                 path: PathBuf::from("/dev/sdc1"),
-                fstype: FsType::Bcachefs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid_a, nr_devices: 2, dev_idx: 1 }),
+                fstype: FsType::Btrfs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid_a, nr_devices: 2, dev_idx: 0 }),
             },
             ProbeResult {
                 path: PathBuf::from("/dev/sdd1"),
@@ -1570,7 +1325,6 @@ mod tests {
         let (groups, singles) = group_multi_device(probed);
         assert_eq!(groups.len(), 2);
         assert_eq!(singles.len(), 0);
-        // Both groups should be complete
         assert!(groups[0].is_complete());
         assert!(groups[1].is_complete());
     }
