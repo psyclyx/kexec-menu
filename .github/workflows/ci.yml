@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 jobs:
@@ -26,14 +27,73 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        attr:
-          - kexec-menu
-          - kexec-menu-aarch64
-          - uki-x86_64
+        include:
+          - attr: kexec-menu
+            artifact: kexec-menu-x86_64
+          - attr: kexec-menu-aarch64
+            artifact: kexec-menu-aarch64
+          - attr: uki-x86_64
+            artifact: kexec-menu-x86_64.efi
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: build
-        run: nix-build -A ${{ matrix.attr }}
+        run: nix-build -A ${{ matrix.attr }} -o result
+
+      - name: stage artifact
+        run: |
+          mkdir -p artifacts
+          if [ -d result/bin ]; then
+            cp result/bin/* artifacts/${{ matrix.artifact }}
+          else
+            cp result artifacts/${{ matrix.artifact }}
+          fi
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: artifacts/${{ matrix.artifact }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*
+
+  nightly:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: update dev release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: Development Build
+          prerelease: true
+          body: |
+            Latest build from `main` (${{ github.sha }}).
+            Updated on each push. Not a stable release.
+          files: artifacts/*
