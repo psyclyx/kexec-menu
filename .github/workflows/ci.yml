@@ -11,8 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/install-nix-action@v31
 
       - name: fmt
         run: nix-shell --run "cargo fmt --check"
@@ -28,36 +27,32 @@ jobs:
     strategy:
       matrix:
         include:
-          - attr: kexec-menu
-            artifact: kexec-menu-x86_64
-          - attr: kexec-menu-aarch64
-            artifact: kexec-menu-aarch64
           - attr: uki-x86_64
             artifact: kexec-menu-x86_64.efi
           - attr: uki-aarch64
             artifact: kexec-menu-aarch64.efi
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/install-nix-action@v31
 
       - name: build
         run: nix-build -A ${{ matrix.attr }} -o result
 
-      - name: stage artifact
+      - name: stage artifacts
         run: |
           mkdir -p artifacts
-          if [ -d result/bin ]; then
-            cp result/bin/* artifacts/${{ matrix.artifact }}
-          else
-            cp result artifacts/${{ matrix.artifact }}
-          fi
+          cp result artifacts/${{ matrix.artifact }}
+          # Also extract the standalone binary from the nix store
+          bin_attr="${{ matrix.attr == 'uki-x86_64' && 'kexec-menu' || 'kexec-menu-aarch64' }}"
+          nix-build -A "$bin_attr" -o result-bin
+          bin_name="${{ matrix.attr == 'uki-x86_64' && 'kexec-menu-x86_64' || 'kexec-menu-aarch64' }}"
+          cp result-bin/bin/kexec-menu "artifacts/$bin_name"
 
-      - name: upload artifact
+      - name: upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: artifacts/${{ matrix.artifact }}
+          path: artifacts/
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -77,7 +72,7 @@ jobs:
           generate_release_notes: true
           files: artifacts/*
 
-  nightly:
+  dev:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [check, build]
     runs-on: ubuntu-latest
