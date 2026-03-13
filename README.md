@@ -1,12 +1,61 @@
 # kexec-menu
 
-A filesystem-agnostic kexec boot menu distributed as a UKI.
+Filesystem-agnostic kexec boot menu, distributed as a UKI. Mounts block
+devices, discovers boot entries, presents a TUI, kexecs the selection.
 
-Mounts available filesystems, discovers boot entries, presents a menu, kexecs
-the selection. Runs from a flash drive, netboot, ESP, or anywhere a UEFI
-environment can load an EFI binary.
+Targets: x86_64, aarch64 (UEFI).
 
-Supported targets: x86_64, aarch64 (UEFI via towboot or similar).
+## Install
+
+### NixOS
+
+```nix
+{ imports = [ kexec-menu.modules.nixos ]; }
+
+{ boot.loader.kexec-menu.enable = true; }
+```
+
+### Arch Linux
+
+A `PKGBUILD` is included. It builds the static binary only — the UKI
+requires additional components (kernel, initrd, static tools). See
+[Building the UKI](#uki) for the full pipeline.
+
+    makepkg -si
+
+### Manual
+
+Copy `kexec-menu.efi` to the ESP and add a UEFI boot entry:
+
+    efibootmgr --create --disk /dev/sda --part 1 \
+      --label "kexec-menu" --loader '\EFI\kexec-menu\kexec-menu.efi'
+
+## Usage
+
+    kexec-menu                 # boot menu
+    kexec-menu --dry-run       # print selection, no kexec
+    kexec-menu --auto-default  # boot default entry without TUI
+
+## Entry Format
+
+Boot entries live under `boot/` on any mounted filesystem. A leaf directory
+contains `entries.json` and the referenced kernel/initrd blobs.
+
+```json
+[
+  { "name": "default", "kernel": "vmlinuz", "initrd": "initrd-default", "cmdline": "..." },
+  { "name": "gaming",  "kernel": "vmlinuz", "initrd": "initrd-gaming",  "cmdline": "..." }
+]
+```
+
+All fields required:
+
+| Field | Description |
+|---|---|
+| `name` | Stable identifier. Used for default selection persistence. |
+| `kernel` | Filename in the leaf directory. |
+| `initrd` | Filename in the leaf directory. |
+| `cmdline` | Full kernel command line. |
 
 ## Building
 
@@ -15,27 +64,24 @@ With Nix:
     nix-build                          # x86_64 static binary
     nix-build -A kexec-menu-aarch64    # aarch64 cross-compile
 
-Without Nix (requires Rust toolchain + musl targets):
+Without Nix (Rust toolchain + musl targets required):
 
     make            # x86_64
     make aarch64    # aarch64
     make all        # both
 
-### Building the UKI
+### UKI
 
 With Nix:
 
-    nix-build -A uki-x86_64     # x86_64 EFI binary
-    nix-build -A uki-aarch64    # aarch64 EFI binary
+    nix-build -A uki-x86_64
+    nix-build -A uki-aarch64
+    nix-build -A kernel-x86_64    # individual components
+    nix-build -A initrd-x86_64
+    nix-build -A logo
 
-Individual Nix components:
-
-    nix-build -A kernel-x86_64  # minimal kernel
-    nix-build -A initrd-x86_64  # CPIO initrd
-    nix-build -A logo           # boot logo PPM
-
-Without Nix (requires kernel source, static tool binaries, and a cross
-toolchain for aarch64):
+Without Nix (kernel source, static tool binaries, cross toolchain for
+aarch64):
 
     make uki ARCH=x86_64 \
       KERNEL_SRC=~/linux-6.12 \
@@ -43,94 +89,74 @@ toolchain for aarch64):
       CRYPTSETUP=/path/to/cryptsetup-static \
       BCACHEFS=/path/to/bcachefs-static
 
-This orchestrates the full pipeline: binary → initrd → kernel → UKI.
-The output lands in `build/kexec-menu.efi`.
+Full pipeline: binary → initrd → kernel → UKI. Output: `build/kexec-menu.efi`.
 
-Individual steps can be run separately:
+Individual steps:
 
-    make logo                              # boot logo (build/logo.ppm)
+    make logo                              # build/logo.ppm
     make initrd ARCH=x86_64 BUSYBOX=... CRYPTSETUP=... BCACHEFS=...
     make kernel ARCH=x86_64 KERNEL_SRC=~/linux-6.12
 
 #### Prerequisites
 
 - Rust toolchain with musl target (`rustup target add x86_64-unknown-linux-musl`)
-- Kernel source tree (extracted tarball, e.g. linux-6.12)
-- Static binaries for the target arch: busybox, cryptsetup, bcachefs-tools
+- Kernel source tree (e.g. linux-6.12)
+- Static binaries: busybox, cryptsetup, bcachefs-tools
 - Kernel build deps: make, gcc, flex, bison, bc, perl
-- cpio (for initrd assembly)
-- awk (for logo generation)
-- For aarch64 cross-builds: `aarch64-linux-gnu-gcc`
+- cpio, awk
+- aarch64 cross-builds: `aarch64-linux-gnu-gcc`
 
-#### Optional variables
+#### Build variables
 
 | Variable | Description |
 |---|---|
-| `CMDLINE` | Embedded kernel command line (default: `console=tty0`) |
-| `LOGO_BG`, `LOGO_FG`, `LOGO_ACCENT` | Logo colors as `"R G B"` strings (0-255) |
-| `EXTRA_CONFIG` | Path to additional kernel config fragment |
-| `STATIC_JSON` | Path to static boot entries file to embed in initrd |
-| `EXTRA_DIR` | Directory whose contents are copied into the initrd root |
-| `RESCUE_SHELL` | Set to `1` to include rescue shell applets in initrd |
-| `CARGO_FEATURES` | Cargo feature flags for the binary build |
+| `CMDLINE` | Kernel command line (default: `console=tty0`) |
+| `LOGO_BG`, `LOGO_FG`, `LOGO_ACCENT` | Logo colors as `"R G B"` (0-255) |
+| `EXTRA_CONFIG` | Additional kernel config fragment |
+| `STATIC_JSON` | Static boot entries file embedded in initrd |
+| `EXTRA_DIR` | Directory contents copied into initrd root |
+| `RESCUE_SHELL` | `1` to include rescue shell applets in initrd |
+| `CARGO_FEATURES` | Cargo feature flags |
+| `KEXEC_MENU_DISK_WHITELIST` | Compile-time device filter. Comma-separated names or prefix globs (e.g. `nvme*,sda`). Unset = no filtering. Requires `disk-whitelist` feature. |
 
-The kernel is built from tinyconfig + the project's config fragments
-(`uki/kernel/`). The UKI uses `CONFIG_EFI_STUB=y` (no systemd-stub
-dependency).
+Kernel: tinyconfig + project fragments (`uki/kernel/`), `CONFIG_EFI_STUB=y`.
 
 ## Feature Flags
 
-Compile-time Cargo features control security-sensitive functionality:
+Compile-time Cargo features:
 
 | Feature | Default | Description |
 |---|---|---|
 | `full-fs-view` | on | Full filesystem browsing keybind |
-| `rescue-shell` | on | Rescue shell support in initrd |
-| `disk-whitelist` | on | Disk whitelist filtering |
+| `rescue-shell` | on | Rescue shell |
+| `disk-whitelist` | on | Disk filtering support. No effect unless `KEXEC_MENU_DISK_WHITELIST` is set at build time. |
 
-Build a locked-down binary with `--no-default-features`:
+Disable all with `--no-default-features`:
 
     cargo build --release --no-default-features
 
 ## Testing
 
-    cargo test --workspace      # unit tests (174 tests)
-    make test                   # unit tests via Makefile
+    cargo test --workspace      # unit tests
+    make test
 
-QEMU integration tests (boots a VM, mounts ext4/btrfs/XFS/F2FS/LUKS/multi-device
-btrfs RAID1, runs the menu, validates disk-whitelist filtering):
+QEMU integration (ext4/btrfs/XFS/F2FS/LUKS/btrfs RAID1, disk filtering):
 
-    $(nix-build -A tests.qemu)  # build deps and run
+    $(nix-build -A tests.qemu)
 
-NixOS module VM tests (installer layout, specialisations, pruning, dedup, UKI install):
+NixOS module VM tests (installer, specialisations, pruning, dedup, UKI install):
 
     nix-build -A tests.installer
 
-## Usage
-
-    kexec-menu                 # normal boot menu
-    kexec-menu --dry-run       # standalone mode: print selection instead of kexec
-    kexec-menu --auto-default  # skip TUI, boot default entry directly
-
 ## NixOS Module
-
-Import `modules/nixos.nix` and enable it:
 
 ```nix
 { imports = [ kexec-menu.modules.nixos ]; }
 
-{
-  boot.loader.kexec-menu.enable = true;
-}
+{ boot.loader.kexec-menu.enable = true; }
 ```
 
-The `package` option defaults to the UKI built from the kexec-menu source tree.
-Override it only if you need a custom build.
-
-### Stylix Integration
-
-For automatic theme integration with [Stylix](https://github.com/danth/stylix),
-import the stylix module:
+### Stylix
 
 ```nix
 { imports = [
@@ -140,28 +166,23 @@ import the stylix module:
 }
 ```
 
-This adds `stylix.targets.kexec-menu.enable` (default: `true` when Stylix is
-active). The boot menu TUI will use your Stylix Base16 palette automatically.
+Provides `stylix.targets.kexec-menu.enable` (default: `true` when Stylix is
+active). Applies the Base16 palette to the TUI.
 
 ### Options
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enable` | bool | `false` | Enable the kexec-menu bootloader |
-| `package` | package | `uki-${arch}` | The kexec-menu UKI package |
-| `finalPackage` | package | (read-only) | UKI with theme/timeout overrides applied |
-| `bootMountPoint` | string | `"/boot"` | Where boot entries are written |
-| `retention` | positive int | `10` | Number of generations to keep |
-| `installStrategy` | `"copy"` or `"reflink"` | `"copy"` | How blobs are placed. `copy` skips identical files (any fs). `reflink` uses `cp --reflink=auto` (saves space on bcachefs/btrfs). |
-| `ukiInstallPath` | null or string | `null` | If set, copy the UKI to this path on each rebuild |
-| `timeout` | null or uint | `null` | Autoboot timeout in seconds. `null` = compiled-in default (5s). |
-| `theme` | null or attrs | `null` | Base16 hex colorscheme. Import `modules/stylix.nix` for auto-detection. |
+| `enable` | bool | `false` | Enable kexec-menu bootloader |
+| `package` | package | `uki-${arch}` | UKI package |
+| `finalPackage` | package | (read-only) | UKI with theme/timeout overrides |
+| `bootMountPoint` | string | `"/boot"` | Boot entry target directory |
+| `retention` | positive int | `10` | Generations to keep |
+| `installStrategy` | `"copy"` or `"reflink"` | `"copy"` | `copy`: skip identical files. `reflink`: `cp --reflink=auto` (bcachefs/btrfs). |
+| `ukiInstallPath` | null or string | `null` | Copy UKI here on rebuild |
+| `timeout` | null or uint | `null` | Autoboot seconds. `null` = default (5s). |
+| `theme` | null or attrs | `null` | Base16 colorscheme. Use `modules/stylix.nix` for auto-detection. |
 
-The module hooks into `boot.loader.external` — each `nixos-rebuild` runs the
-installer, which copies kernel/initrd/entries.json into a generation leaf
-directory under `<bootMountPoint>/nixos/` and prunes old generations beyond
-the retention count. Specialisations are included as additional entries.
-
-## Spec
-
-See [docs/spec.md](docs/spec.md).
+Hooks into `boot.loader.external`. Each `nixos-rebuild` writes
+kernel/initrd/entries.json to `<bootMountPoint>/nixos/` and prunes past
+retention. Specialisations are additional entries in the same leaf.
