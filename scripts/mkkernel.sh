@@ -89,6 +89,16 @@ CONFIG_DIR="${CONFIG_DIR:-$SCRIPT_DIR/../uki/kernel}"
 if [ -n "${INITRAMFS:-}" ]; then
     [ -f "$INITRAMFS" ] || die "INITRAMFS not found: $INITRAMFS"
     INITRAMFS="$(cd "$(dirname "$INITRAMFS")" && pwd)/$(basename "$INITRAMFS")"
+    # Kernel usr/Makefile detects CPIO archives by file extension.
+    # Ensure the path ends in .cpio so it's not treated as a text file list.
+    case "$INITRAMFS" in
+        *.cpio) ;;
+        *)
+            INITRAMFS_COPY="$BUILD_DIR/initramfs.cpio"
+            cp "$INITRAMFS" "$INITRAMFS_COPY"
+            INITRAMFS="$INITRAMFS_COPY"
+            ;;
+    esac
 fi
 
 if [ -n "${LOGO:-}" ]; then

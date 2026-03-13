@@ -51,8 +51,12 @@ mkdir -p "$ROOT"/{bin,dev,proc,sys,mnt,run,tmp,etc/kexec-menu}
 
 # --- Init script ---
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INIT_SRC="$SCRIPT_DIR/../uki/initrd/init"
+if [ -n "${INIT_SCRIPT:-}" ]; then
+  INIT_SRC="$INIT_SCRIPT"
+else
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  INIT_SRC="$SCRIPT_DIR/../uki/initrd/init"
+fi
 [ -f "$INIT_SRC" ] || die "init script not found: $INIT_SRC"
 cp "$INIT_SRC" "$ROOT/init"
 chmod +x "$ROOT/init"

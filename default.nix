@@ -117,13 +117,15 @@ let
       inherit kernelSrc;
       initrd = self.initrd-x86_64;
       logo = self.logo;
+      crossCC = crossCCFor.x86_64;
     };
 
-    uki-aarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./uki/uki.nix {
+    uki-aarch64 = pkgs.callPackage ./uki/uki.nix {
       arch = "aarch64";
       inherit kernelSrc;
       initrd = self.initrd-aarch64;
       logo = self.logo;
+      crossCC = crossCCFor.aarch64;
     };
 
     # ── Tests ───────────────────────────────────────────────────────────

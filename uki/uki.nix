@@ -33,11 +33,12 @@
   cmdline ? "console=tty0",
   extraConfig ? null,
   logo ? null,
+  crossCC ? null,
 }:
 
 let
   kernel = callPackage ./kernel/kernel.nix {
-    inherit arch kernelSrc extraConfig logo;
+    inherit arch kernelSrc extraConfig logo crossCC;
     initramfs = initrd;
     inherit cmdline;
   };

@@ -45,6 +45,7 @@ runCommand "kexec-menu-initrd" {
     '') extraContents)}
   ''}
 
+  export INIT_SCRIPT=${./init}
   export KEXEC_MENU=${kexec-menu}/bin/kexec-menu
   export BUSYBOX=${busybox}/bin/busybox
   export CRYPTSETUP=${cryptsetup}/bin/cryptsetup
