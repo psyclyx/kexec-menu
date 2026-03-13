@@ -34,4 +34,5 @@ package() {
   fi
 
   install -Dm755 "target/$target/release/kexec-menu" "$pkgdir/usr/bin/kexec-menu"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
