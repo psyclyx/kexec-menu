@@ -12,6 +12,7 @@ pkgs.mkShell {
     musl64.buildPackages.rustc
     musl64.buildPackages.cargo
     musl64.buildPackages.clippy
+    musl64.buildPackages.rustfmt
     pkgs.rust-analyzer
 
     # Testing
