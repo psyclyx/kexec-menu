@@ -358,6 +358,33 @@ fn path_to_cstring(p: &Path) -> Result<CString> {
         .map_err(|_| Error::Parse("path contains NUL byte".into()))
 }
 
+// --- Disk whitelist ---
+
+/// Check whether a device name matches a whitelist pattern.
+/// Patterns: exact match or prefix glob (e.g. "nvme*" matches "nvme0n1p1").
+/// A "/dev/" prefix on the pattern is stripped before matching.
+#[cfg(feature = "disk-whitelist")]
+fn pattern_matches(pattern: &str, dev_name: &str) -> bool {
+    let pat = pattern.strip_prefix("/dev/").unwrap_or(pattern);
+    if let Some(prefix) = pat.strip_suffix('*') {
+        dev_name.starts_with(prefix)
+    } else {
+        dev_name == pat
+    }
+}
+
+/// Check whether a device name is allowed by the compile-time whitelist.
+/// Returns true if no whitelist is configured (allow all).
+#[cfg(feature = "disk-whitelist")]
+fn device_allowed(dev_name: &str) -> bool {
+    match option_env!("KEXEC_MENU_DISK_WHITELIST") {
+        None => true,
+        Some(list) if list.is_empty() => true,
+        Some(list) => list.split(',')
+            .any(|pat| pattern_matches(pat.trim(), dev_name)),
+    }
+}
+
 // --- Source discovery (high-level API) ---
 
 /// Best-effort label for a device: partition label > fs label > UUID > device name.
@@ -388,6 +415,10 @@ pub fn discover_sources() -> Result<Vec<Source>> {
     let mut sources = Vec::new();
 
     for dev in &devices {
+        #[cfg(feature = "disk-whitelist")]
+        if !device_allowed(&dev.name) {
+            continue;
+        }
         let fstype = match probe_fs_type(&dev.path) {
             Ok(Some(ft)) => ft,
             Ok(None) => continue, // no recognized filesystem
@@ -670,5 +701,41 @@ mod tests {
         let mut f = fs::OpenOptions::new().write(true).open(path).unwrap();
         f.seek(SeekFrom::Start(offset)).unwrap();
         f.write_all(data).unwrap();
+    }
+
+    // --- disk-whitelist pattern matching tests ---
+
+    #[cfg(feature = "disk-whitelist")]
+    mod whitelist {
+        use super::super::pattern_matches;
+
+        #[test]
+        fn exact_match() {
+            assert!(pattern_matches("sda1", "sda1"));
+            assert!(!pattern_matches("sda1", "sda2"));
+        }
+
+        #[test]
+        fn glob_suffix() {
+            assert!(pattern_matches("nvme*", "nvme0n1p1"));
+            assert!(pattern_matches("sd*", "sda1"));
+            assert!(!pattern_matches("nvme*", "sda1"));
+        }
+
+        #[test]
+        fn dev_prefix_stripped() {
+            assert!(pattern_matches("/dev/sda1", "sda1"));
+            assert!(pattern_matches("/dev/nvme*", "nvme0n1p1"));
+        }
+
+        #[test]
+        fn empty_prefix_glob_matches_all() {
+            assert!(pattern_matches("*", "anything"));
+        }
+
+        #[test]
+        fn no_partial_match_without_glob() {
+            assert!(!pattern_matches("sda", "sda1"));
+        }
     }
 }
