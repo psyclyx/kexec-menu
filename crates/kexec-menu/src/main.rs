@@ -97,6 +97,7 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
                 Ok(())
             }
         }
+        #[cfg(feature = "full-fs-view")]
         Ok(TuiResult::BootFile { path }) => {
             if dry_run {
                 eprintln!("kexec-menu: would boot file:");
@@ -167,6 +168,7 @@ enum TuiResult {
         entry: kexec_menu_core::types::Entry,
         source_idx: usize,
     },
+    #[cfg(feature = "full-fs-view")]
     BootFile {
         path: PathBuf,
     },
@@ -179,6 +181,7 @@ enum SideScreen {
         input: String,
         error: Option<String>,
     },
+    #[cfg(feature = "full-fs-view")]
     FileBrowser {
         source_label: String,
         current_dir: PathBuf,
@@ -215,6 +218,7 @@ fn run_tui(
             Some(SideScreen::Passphrase { source_label, input: pw_input, error, .. }) => {
                 tui::render_passphrase(&mut output, source_label, pw_input, error.as_deref())?;
             }
+            #[cfg(feature = "full-fs-view")]
             Some(SideScreen::FileBrowser { source_label, current_dir, root, menu, .. }) => {
                 tui::render_file_browser(&mut output, source_label, current_dir, root, menu)?;
             }
@@ -247,6 +251,7 @@ fn run_tui(
                             error: None,
                         });
                     }
+                    #[cfg(feature = "full-fs-view")]
                     tui::Action::OpenFileBrowser => {
                         if let Some(src_idx) = view.cursor_source_idx() {
                             if let Some(mp) = &sources[src_idx].mount_point {
@@ -326,6 +331,7 @@ fn run_tui(
                     _ => {}
                 }
             }
+            #[cfg(feature = "full-fs-view")]
             Some(SideScreen::FileBrowser {
                 current_dir, root, menu, dir_entries, ..
             }) => {

@@ -4,5 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["full-fs-view", "rescue-shell", "disk-whitelist"]
+full-fs-view = []
+rescue-shell = []
+disk-whitelist = []
+
 [dependencies]
 libc = "0.2"

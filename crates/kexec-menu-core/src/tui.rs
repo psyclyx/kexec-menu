@@ -590,6 +590,7 @@ impl TreeView {
 
 /// An entry in a directory listing for the file browser.
 #[derive(Debug, Clone)]
+#[cfg(feature = "full-fs-view")]
 pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
@@ -913,6 +914,7 @@ pub fn handle_tree_view_key(view: &mut TreeView, key: &Key) -> Action {
                 Action::None
             }
         }
+        #[cfg(feature = "full-fs-view")]
         Key::Char('f') | Key::Char('F') => Action::OpenFileBrowser,
         Key::Char('r') | Key::Char('R') => Action::RefreshSources,
         Key::Char('q') | Key::Char('Q') => Action::Quit,
@@ -956,12 +958,16 @@ pub enum Action {
     /// Submit entered passphrase.
     SubmitPassphrase,
     /// Open full filesystem browser for the current source.
+    #[cfg(feature = "full-fs-view")]
     OpenFileBrowser,
     /// Navigate into a directory in the file browser.
+    #[cfg(feature = "full-fs-view")]
     OpenDir(usize),
     /// Go up one directory in the file browser.
+    #[cfg(feature = "full-fs-view")]
     DirUp,
     /// Boot a file directly from the file browser (kexec a bare kernel).
+    #[cfg(feature = "full-fs-view")]
     BootFile { path: std::path::PathBuf },
     /// Rescan block devices and rebuild sources.
     RefreshSources,
@@ -969,6 +975,7 @@ pub enum Action {
 
 // --- Bootable file detection ---
 
+#[cfg(feature = "full-fs-view")]
 /// Check if a file is a bootable kernel image (PE/EFI stub or bzImage).
 ///
 /// Reads the first 518 bytes and checks:
@@ -998,6 +1005,7 @@ pub fn is_bootable_file(path: &std::path::Path) -> bool {
 
 // --- File browser ---
 
+#[cfg(feature = "full-fs-view")]
 /// List directory contents and build a menu for the file browser.
 pub fn build_file_menu(dir: &std::path::Path) -> io::Result<(Menu, Vec<DirEntry>)> {
     let mut entries = Vec::new();
@@ -1035,6 +1043,7 @@ pub fn build_file_menu(dir: &std::path::Path) -> io::Result<(Menu, Vec<DirEntry>
     Ok((Menu::new(items, None), entries))
 }
 
+#[cfg(feature = "full-fs-view")]
 /// Render the file browser screen.
 pub fn render_file_browser(
     w: &mut impl Write,
@@ -1061,6 +1070,7 @@ pub fn render_file_browser(
     )
 }
 
+#[cfg(feature = "full-fs-view")]
 /// Handle a key press on the file browser screen.
 pub fn handle_file_browser_key(
     menu: &mut Menu,
@@ -1304,6 +1314,7 @@ mod tests {
 
     // --- File browser tests ---
 
+    #[cfg(feature = "full-fs-view")]
     fn make_tempdir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "kexec-tui-test-{}-{}",
@@ -1317,6 +1328,7 @@ mod tests {
         dir
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn build_file_menu_lists_entries() {
         let tmp = make_tempdir();
@@ -1338,6 +1350,7 @@ mod tests {
         assert_eq!(menu.items[0].label, "file.txt");
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn build_file_menu_empty_dir() {
         let tmp = make_tempdir();
@@ -1346,6 +1359,7 @@ mod tests {
         assert!(menu.is_empty());
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn file_browser_enter_on_dir_opens() {
         let entries = vec![DirEntry {
@@ -1366,6 +1380,7 @@ mod tests {
         assert!(matches!(action, Action::OpenDir(0)));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn file_browser_enter_on_file_noop() {
         let entries = vec![DirEntry {
@@ -1386,6 +1401,7 @@ mod tests {
         assert!(matches!(action, Action::None));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn file_browser_escape_at_root_goes_back() {
         let entries = vec![];
@@ -1396,6 +1412,7 @@ mod tests {
         assert!(matches!(action, Action::Back));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn file_browser_escape_in_subdir_goes_up() {
         let entries = vec![];
@@ -1406,6 +1423,7 @@ mod tests {
         assert!(matches!(action, Action::DirUp));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn file_browser_b_at_root_goes_back() {
         let entries = vec![];
@@ -1416,6 +1434,7 @@ mod tests {
         assert!(matches!(action, Action::Back));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn render_file_browser_output() {
         let mut buf = Vec::new();
@@ -1436,6 +1455,7 @@ mod tests {
         assert!(output.contains("boot tree"));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn render_file_browser_at_root() {
         let mut buf = Vec::new();
@@ -1448,6 +1468,7 @@ mod tests {
 
     // --- Bootable file detection tests ---
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn detect_pe_binary() {
         let tmp = make_tempdir();
@@ -1459,6 +1480,7 @@ mod tests {
         assert!(is_bootable_file(&path));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn detect_bzimage() {
         let tmp = make_tempdir();
@@ -1472,6 +1494,7 @@ mod tests {
         assert!(is_bootable_file(&path));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn detect_non_bootable() {
         let tmp = make_tempdir();
@@ -1480,6 +1503,7 @@ mod tests {
         assert!(!is_bootable_file(&path));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn detect_empty_file() {
         let tmp = make_tempdir();
@@ -1488,6 +1512,7 @@ mod tests {
         assert!(!is_bootable_file(&path));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn detect_too_small_for_bzimage() {
         let tmp = make_tempdir();
@@ -1496,11 +1521,13 @@ mod tests {
         assert!(!is_bootable_file(&path));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn detect_nonexistent_file() {
         assert!(!is_bootable_file(std::path::Path::new("/nonexistent/path")));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn file_browser_enter_on_bootable_boots() {
         let entries = vec![DirEntry {
@@ -1524,6 +1551,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn build_file_menu_marks_bootable() {
         let tmp = make_tempdir();
@@ -2045,6 +2073,7 @@ mod tests {
         assert!(matches!(action, Action::Quit));
     }
 
+    #[cfg(feature = "full-fs-view")]
     #[test]
     fn handle_tree_view_f_opens_file_browser() {
         let sources = test_sources();

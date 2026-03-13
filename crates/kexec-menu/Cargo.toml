@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["full-fs-view", "rescue-shell", "disk-whitelist"]
+full-fs-view = ["kexec-menu-core/full-fs-view"]
+rescue-shell = ["kexec-menu-core/rescue-shell"]
+disk-whitelist = ["kexec-menu-core/disk-whitelist"]
+
 [dependencies]
-kexec-menu-core = { path = "../kexec-menu-core" }
+kexec-menu-core = { path = "../kexec-menu-core", default-features = false }
 libc = "0.2"
