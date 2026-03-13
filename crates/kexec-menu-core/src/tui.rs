@@ -856,7 +856,7 @@ pub fn render_tree_view(w: &mut impl Write, view: &TreeView) -> io::Result<()> {
     // Hint bar
     write!(w, "\r\n")?;
     set_dim(w)?;
-    write!(w, " ↑↓ navigate  Enter select/toggle  ←→ collapse/expand  f filesystem  q quit")?;
+    write!(w, " ↑↓ navigate  Enter select/toggle  ←→ collapse/expand  f filesystem  r refresh  q quit")?;
     reset_style(w)?;
 
     w.flush()
@@ -914,6 +914,7 @@ pub fn handle_tree_view_key(view: &mut TreeView, key: &Key) -> Action {
             }
         }
         Key::Char('f') | Key::Char('F') => Action::OpenFileBrowser,
+        Key::Char('r') | Key::Char('R') => Action::RefreshSources,
         Key::Char('q') | Key::Char('Q') => Action::Quit,
         _ => Action::None,
     }
@@ -962,6 +963,8 @@ pub enum Action {
     DirUp,
     /// Boot a file directly from the file browser (kexec a bare kernel).
     BootFile { path: std::path::PathBuf },
+    /// Rescan block devices and rebuild sources.
+    RefreshSources,
 }
 
 // --- Bootable file detection ---
@@ -1978,6 +1981,7 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains("navigate"));
+        assert!(output.contains("refresh"));
         assert!(output.contains("quit"));
     }
 
@@ -2049,6 +2053,19 @@ mod tests {
 
         let action = handle_tree_view_key(&mut view, &Key::Char('f'));
         assert!(matches!(action, Action::OpenFileBrowser));
+    }
+
+    #[test]
+    fn handle_tree_view_r_refreshes() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let mut view = TreeView::build(&sources, &trees, None);
+
+        let action = handle_tree_view_key(&mut view, &Key::Char('r'));
+        assert!(matches!(action, Action::RefreshSources));
+
+        let action = handle_tree_view_key(&mut view, &Key::Char('R'));
+        assert!(matches!(action, Action::RefreshSources));
     }
 
     #[test]
