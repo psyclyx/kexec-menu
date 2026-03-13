@@ -7,6 +7,8 @@
 #   kernel-aarch64      — minimal kernel for aarch64 UKI
 #   initrd-x86_64       — CPIO initrd for x86_64 UKI
 #   initrd-aarch64      — CPIO initrd for aarch64 UKI
+#   uki-x86_64          — complete UKI EFI binary for x86_64
+#   uki-aarch64          — complete UKI EFI binary for aarch64
 #   tests.installer     — NixOS VM test for the installer/module
 #
 # Usage:
@@ -16,6 +18,8 @@
 #   nix-build -A kernel-aarch64
 #   nix-build -A initrd-x86_64
 #   nix-build -A initrd-aarch64
+#   nix-build -A uki-x86_64
+#   nix-build -A uki-aarch64
 #   nix-build -A tests.installer
 #   $(nix-build -A tests.qemu)   # QEMU integration test (requires KVM)
 let
@@ -49,6 +53,16 @@ let
     initrd-aarch64 = pkgs.callPackage ./uki/initrd/initrd.nix {
       kexec-menu = self.kexec-menu-aarch64;
       targetPkgsStatic = aarch64Musl.pkgsStatic;
+    };
+
+    uki-x86_64 = pkgs.callPackage ./uki/uki.nix {
+      arch = "x86_64";
+      initrd = self.initrd-x86_64;
+    };
+
+    uki-aarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./uki/uki.nix {
+      arch = "aarch64";
+      initrd = self.initrd-aarch64;
     };
 
     tests = {

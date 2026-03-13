@@ -6,12 +6,16 @@
 #
 # Args:
 #   arch         — "x86_64" or "aarch64"
+#   initramfs    — path to CPIO archive to embed (or null for no built-in initramfs)
+#   cmdline      — kernel command line to embed (or "" for none)
 #   extraConfig  — additional structuredExtraConfig attrs
 #   extraModules — additional kernel modules to enable
 {
   lib,
   linuxPackages_latest,
   arch ? "x86_64",
+  initramfs ? null,
+  cmdline ? "",
   extraConfig ? {},
   extraModules ? [],
 }:
@@ -54,8 +58,21 @@ let
     value = force module;
   }) extraModules);
 
-  # Merge order: common → arch → extraModules → extraConfig (last wins)
-  mergedConfig = commonConfig // archConfig // moduleConfig // extraConfig;
+  # Embedded initramfs (for UKI builds)
+  initramfsConfig = lib.optionalAttrs (initramfs != null) {
+    BLK_DEV_INITRD = force yes;
+    INITRAMFS_SOURCE = force (freeform ''"${initramfs}"'');
+  };
+
+  # Embedded command line (for UKI builds)
+  cmdlineConfig = lib.optionalAttrs (cmdline != "") {
+    CMDLINE_BOOL = force yes;
+    CMDLINE = force (freeform ''"${cmdline}"'');
+  };
+
+  # Merge order: common → arch → extraModules → initramfs → cmdline → extraConfig (last wins)
+  mergedConfig = commonConfig // archConfig // moduleConfig
+    // initramfsConfig // cmdlineConfig // extraConfig;
 
   kernel = linuxPackages_latest.kernel.override {
     # Start from tinyconfig instead of defconfig
