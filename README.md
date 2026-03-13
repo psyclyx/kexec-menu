@@ -23,20 +23,60 @@ Without Nix (requires Rust toolchain + musl targets):
 
 ### Building the UKI
 
-Complete UKI assembly (kernel + initrd + bootmenu binary):
+With Nix:
 
     nix-build -A uki-x86_64     # x86_64 EFI binary
     nix-build -A uki-aarch64    # aarch64 EFI binary
 
-Individual components:
+Individual Nix components:
 
     nix-build -A kernel-x86_64  # minimal kernel
     nix-build -A initrd-x86_64  # CPIO initrd
     nix-build -A logo           # boot logo PPM
 
-The kernel is built from nixpkgs `linuxPackages_latest` with a minimal
-tinyconfig + required fragments. The UKI uses `CONFIG_EFI_STUB=y` (no
-systemd-stub dependency).
+Without Nix (requires kernel source, static tool binaries, and a cross
+toolchain for aarch64):
+
+    make uki ARCH=x86_64 \
+      KERNEL_SRC=~/linux-6.12 \
+      BUSYBOX=/path/to/busybox-static \
+      CRYPTSETUP=/path/to/cryptsetup-static \
+      BCACHEFS=/path/to/bcachefs-static
+
+This orchestrates the full pipeline: binary → initrd → kernel → UKI.
+The output lands in `build/kexec-menu.efi`.
+
+Individual steps can be run separately:
+
+    make logo                              # boot logo (build/logo.ppm)
+    make initrd ARCH=x86_64 BUSYBOX=... CRYPTSETUP=... BCACHEFS=...
+    make kernel ARCH=x86_64 KERNEL_SRC=~/linux-6.12
+
+#### Prerequisites
+
+- Rust toolchain with musl target (`rustup target add x86_64-unknown-linux-musl`)
+- Kernel source tree (extracted tarball, e.g. linux-6.12)
+- Static binaries for the target arch: busybox, cryptsetup, bcachefs-tools
+- Kernel build deps: make, gcc, flex, bison, bc, perl
+- cpio (for initrd assembly)
+- awk (for logo generation)
+- For aarch64 cross-builds: `aarch64-linux-gnu-gcc`
+
+#### Optional variables
+
+| Variable | Description |
+|---|---|
+| `CMDLINE` | Embedded kernel command line (default: `console=tty0`) |
+| `LOGO_BG`, `LOGO_FG`, `LOGO_ACCENT` | Logo colors as `"R G B"` strings (0-255) |
+| `EXTRA_CONFIG` | Path to additional kernel config fragment |
+| `STATIC_JSON` | Path to static boot entries file to embed in initrd |
+| `EXTRA_DIR` | Directory whose contents are copied into the initrd root |
+| `RESCUE_SHELL` | Set to `1` to include rescue shell applets in initrd |
+| `CARGO_FEATURES` | Cargo feature flags for the binary build |
+
+The kernel is built from tinyconfig + the project's config fragments
+(`uki/kernel/`). The UKI uses `CONFIG_EFI_STUB=y` (no systemd-stub
+dependency).
 
 ## Feature Flags
 
