@@ -18,6 +18,8 @@ pub enum FsType {
     Ext4,
     Btrfs,
     Bcachefs,
+    Xfs,
+    F2fs,
     Luks,
 }
 
@@ -27,6 +29,8 @@ impl FsType {
             FsType::Ext4 => "ext4",
             FsType::Btrfs => "btrfs",
             FsType::Bcachefs => "bcachefs",
+            FsType::Xfs => "xfs",
+            FsType::F2fs => "f2fs",
             FsType::Luks => "crypto_LUKS",
         }
     }
@@ -37,6 +41,8 @@ impl FsType {
             FsType::Ext4 => "ext4",
             FsType::Btrfs => "btrfs",
             FsType::Bcachefs => "bcachefs",
+            FsType::Xfs => "xfs",
+            FsType::F2fs => "f2fs",
             FsType::Luks => panic!("LUKS is not directly mountable"),
         }
     }
@@ -58,6 +64,13 @@ const BCACHEFS_SB_START: u64 = 0x1000; // sector 8
 const BCACHEFS_SUPER_OFFSET: u64 = BCACHEFS_SB_START + 0x18; // magic field
 const BCACHEFS_MAGIC: [u8; 4] = [0xf6, 0x73, 0x85, 0xc6]; // little-endian 0xc68573f6
 
+// XFS: magic "XFSB" (0x58465342) at offset 0, label at offset 108 (12 bytes)
+const XFS_MAGIC: &[u8] = b"XFSB";
+
+// F2FS: magic 0xF2F52010 at offset 1024
+const F2FS_SUPER_OFFSET: u64 = 1024;
+const F2FS_MAGIC: [u8; 4] = [0x10, 0x20, 0xF5, 0xF2]; // little-endian 0xF2F52010
+
 const LUKS_MAGIC: &[u8] = b"LUKS\xba\xbe";
 
 /// Linux ENOKEY errno — returned when bcachefs mount fails due to missing encryption key.
@@ -74,10 +87,22 @@ pub fn probe_fs_type(dev: &Path) -> Result<Option<FsType>> {
         return Ok(Some(FsType::Luks));
     }
 
+    // XFS: magic "XFSB" at offset 0
+    f.seek(SeekFrom::Start(0))?;
+    if f.read_exact(&mut buf[..4]).is_ok() && buf[..4] == *XFS_MAGIC {
+        return Ok(Some(FsType::Xfs));
+    }
+
     // ext4: magic at offset 1024+0x38
     f.seek(SeekFrom::Start(EXT_SUPER_OFFSET))?;
     if f.read_exact(&mut buf[..2]).is_ok() && buf[..2] == EXT_MAGIC {
         return Ok(Some(FsType::Ext4));
+    }
+
+    // F2FS: magic at offset 1024
+    f.seek(SeekFrom::Start(F2FS_SUPER_OFFSET))?;
+    if f.read_exact(&mut buf[..4]).is_ok() && buf[..4] == F2FS_MAGIC {
+        return Ok(Some(FsType::F2fs));
     }
 
     // bcachefs: magic at offset 0x1008
@@ -104,6 +129,8 @@ pub fn read_fs_label(dev: &Path, fstype: FsType) -> Result<Option<String>> {
         FsType::Ext4 => read_ext4_label(&mut f),
         FsType::Btrfs => read_btrfs_label(&mut f),
         FsType::Bcachefs => read_bcachefs_label(&mut f),
+        FsType::Xfs => read_xfs_label(&mut f),
+        FsType::F2fs => read_f2fs_label(&mut f),
         FsType::Luks => Ok(None), // LUKS has no fs label at this layer
     }
 }
@@ -130,6 +157,33 @@ fn read_bcachefs_label(f: &mut fs::File) -> Result<Option<String>> {
     let mut buf = [0u8; 32];
     f.read_exact(&mut buf)?;
     Ok(label_from_bytes(&buf))
+}
+
+fn read_xfs_label(f: &mut fs::File) -> Result<Option<String>> {
+    // XFS volume label: 12 bytes at offset 108 in the superblock
+    f.seek(SeekFrom::Start(108))?;
+    let mut buf = [0u8; 12];
+    f.read_exact(&mut buf)?;
+    Ok(label_from_bytes(&buf))
+}
+
+fn read_f2fs_label(f: &mut fs::File) -> Result<Option<String>> {
+    // F2FS volume label: UTF-16LE, 512 bytes at superblock offset 1024 + 0x1A0 (416)
+    f.seek(SeekFrom::Start(1024 + 0x1A0))?;
+    let mut buf = [0u8; 512];
+    f.read_exact(&mut buf)?;
+    // Decode UTF-16LE, stop at first NUL u16
+    let u16s: Vec<u16> = buf.chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&c| c != 0)
+        .collect();
+    if u16s.is_empty() {
+        return Ok(None);
+    }
+    let s = String::from_utf16(&u16s)
+        .map_err(|_| Error::Parse("invalid UTF-16 in F2FS label".into()))?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() { Ok(None) } else { Ok(Some(trimmed.to_string())) }
 }
 
 /// Extract a NUL-terminated UTF-8 label from a fixed-size buffer.
@@ -351,7 +405,8 @@ pub fn discover_sources() -> Result<Vec<Source>> {
                     passphrase: None,
                 });
             }
-            FsType::Ext4 | FsType::Btrfs | FsType::Bcachefs => {
+            FsType::Ext4 | FsType::Btrfs | FsType::Bcachefs
+            | FsType::Xfs | FsType::F2fs => {
                 match mount_ro(&dev.path, fstype) {
                     Ok(mp) => {
                         sources.push(Source {
@@ -513,6 +568,8 @@ mod tests {
         assert_eq!(FsType::Ext4.as_str(), "ext4");
         assert_eq!(FsType::Btrfs.as_str(), "btrfs");
         assert_eq!(FsType::Bcachefs.as_str(), "bcachefs");
+        assert_eq!(FsType::Xfs.as_str(), "xfs");
+        assert_eq!(FsType::F2fs.as_str(), "f2fs");
         assert_eq!(FsType::Luks.as_str(), "crypto_LUKS");
     }
 
@@ -521,6 +578,8 @@ mod tests {
         assert_eq!(FsType::Ext4.mount_type(), "ext4");
         assert_eq!(FsType::Btrfs.mount_type(), "btrfs");
         assert_eq!(FsType::Bcachefs.mount_type(), "bcachefs");
+        assert_eq!(FsType::Xfs.mount_type(), "xfs");
+        assert_eq!(FsType::F2fs.mount_type(), "f2fs");
     }
 
     #[test]
@@ -557,6 +616,20 @@ mod tests {
         let tmp = test_device(0x101c); // must cover magic at 0x1018
         write_at(&tmp, BCACHEFS_SUPER_OFFSET, &BCACHEFS_MAGIC);
         assert_eq!(probe_fs_type(&tmp).unwrap(), Some(FsType::Bcachefs));
+    }
+
+    #[test]
+    fn probe_xfs_magic() {
+        let tmp = test_device(2048);
+        write_at(&tmp, 0, XFS_MAGIC);
+        assert_eq!(probe_fs_type(&tmp).unwrap(), Some(FsType::Xfs));
+    }
+
+    #[test]
+    fn probe_f2fs_magic() {
+        let tmp = test_device(2048);
+        write_at(&tmp, F2FS_SUPER_OFFSET, &F2FS_MAGIC);
+        assert_eq!(probe_fs_type(&tmp).unwrap(), Some(FsType::F2fs));
     }
 
     #[test]
