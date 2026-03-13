@@ -21,9 +21,40 @@ Without Nix (requires Rust toolchain + musl targets):
     make aarch64    # aarch64
     make all        # both
 
+### Building the UKI
+
+Complete UKI assembly (kernel + initrd + bootmenu binary):
+
+    nix-build -A uki-x86_64     # x86_64 EFI binary
+    nix-build -A uki-aarch64    # aarch64 EFI binary
+
+Individual components:
+
+    nix-build -A kernel-x86_64  # minimal kernel
+    nix-build -A initrd-x86_64  # CPIO initrd
+    nix-build -A logo           # boot logo PPM
+
+The kernel is built from nixpkgs `linuxPackages_latest` with a minimal
+tinyconfig + required fragments. The UKI uses `CONFIG_EFI_STUB=y` (no
+systemd-stub dependency).
+
+## Feature Flags
+
+Compile-time Cargo features control security-sensitive functionality:
+
+| Feature | Default | Description |
+|---|---|---|
+| `full-fs-view` | on | Full filesystem browsing keybind |
+| `rescue-shell` | on | Rescue shell support in initrd |
+| `disk-whitelist` | on | Disk whitelist filtering |
+
+Build a locked-down binary with `--no-default-features`:
+
+    cargo build --release --no-default-features
+
 ## Testing
 
-    cargo test --workspace      # unit tests (135 tests)
+    cargo test --workspace      # unit tests (138 tests)
     make test                   # unit tests via Makefile
 
 QEMU integration tests (boots a VM, mounts ext4/btrfs/LUKS, runs the menu):

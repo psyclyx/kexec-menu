@@ -101,9 +101,11 @@ Automount all visible block devices read-only on startup where possible.
 Encrypted or errored sources shown but not automounted.
 
 Supported:
-- ext4, btrfs, bcachefs (unencrypted): mount directly
+- ext4, btrfs, XFS, F2FS, bcachefs (unencrypted): mount directly
 - bcachefs native encryption: prompt on selection
 - LUKS: prompt on selection
+
+Press `r` to rescan block devices and refresh the source list.
 
 Multiple filesystems appear as separate top-level sources. Boot trees are not merged.
 
@@ -120,6 +122,8 @@ volume. No assumptions about its own provenance.
 Build-time colorscheme and font configuration.
 NixOS module adds a stylix target if stylix is present.
 
+Boot logo: 80x80 PPM, optionally colorized with a base16 palette at build time.
+
 ---
 
 ## UKI
@@ -128,8 +132,13 @@ Self-contained EFI binary. Small and fast is a design goal — bloat is a bug.
 Separate kernel configs for x86_64 and aarch64. Rescue shell is a build-time
 option (default: on).
 
-Contents: minimal Linux kernel, initrd with bcachefs-tools, cryptsetup,
-kexec-tools, bootmenu binary, minimal userspace (busybox or equivalent).
+Contents: minimal Linux kernel (tinyconfig + required fragments,
+CONFIG_EFI_STUB=y), initrd with bcachefs-tools, cryptsetup, kexec-tools,
+bootmenu binary, minimal userspace (busybox or equivalent).
+
+Compile-time feature flags (`full-fs-view`, `rescue-shell`, `disk-whitelist`;
+all default-on) control security-sensitive functionality. Build with
+`--no-default-features` for locked-down deployments.
 
 Buildable without Nix via Makefile. Nix is the primary build path.
 
