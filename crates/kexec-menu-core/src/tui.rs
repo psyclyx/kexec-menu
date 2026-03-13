@@ -46,7 +46,7 @@ pub fn read_key(input: &mut impl Read) -> io::Result<Key> {
         }
         b'\r' | b'\n' => Ok(Key::Enter),
         b'\x7f' | b'\x08' => Ok(Key::Backspace),
-        b if b >= 0x20 && b < 0x7f => Ok(Key::Char(b as char)),
+        b if (0x20..0x7f).contains(&b) => Ok(Key::Char(b as char)),
         _ => Ok(Key::Unknown),
     }
 }
@@ -498,12 +498,12 @@ impl TreeView {
         if let Some(node) = self.nodes.get_mut(self.cursor) {
             match &node.kind {
                 NodeKind::Entry { .. } => return false, // entries don't toggle
-                NodeKind::Source { state, .. } => match state {
-                    NodeSourceState::Encrypted
+                NodeKind::Source {
+                    state: NodeSourceState::Encrypted
                     | NodeSourceState::Error(_)
-                    | NodeSourceState::Empty => return false,
-                    _ => {}
-                },
+                    | NodeSourceState::Empty,
+                    ..
+                } => return false,
                 _ => {}
             }
             node.expanded = !node.expanded;
@@ -1046,7 +1046,7 @@ pub fn build_file_menu(dir: &std::path::Path) -> io::Result<(Menu, Vec<DirEntry>
     let mut entries = Vec::new();
     let mut read_dir: Vec<_> =
         std::fs::read_dir(dir)?.collect::<std::result::Result<Vec<_>, _>>()?;
-    read_dir.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    read_dir.sort_by_key(|a| a.file_name());
 
     for de in read_dir {
         let name = de.file_name().to_string_lossy().into_owned();

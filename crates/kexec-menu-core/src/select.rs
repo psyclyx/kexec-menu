@@ -64,7 +64,7 @@ fn resolve_global_fallback(trees: &[(String, Vec<TreeNode>)]) -> Option<BootSele
     let mut newest: Option<&Leaf> = None;
     for (_, tree) in trees {
         collect_leaves(tree, &mut |leaf| {
-            if newest.map_or(true, |n| leaf.mtime > n.mtime) {
+            if newest.is_none_or(|n| leaf.mtime > n.mtime) {
                 newest = Some(leaf);
             }
         });

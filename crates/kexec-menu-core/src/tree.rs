@@ -198,7 +198,7 @@ impl<'a> JsonParser<'a> {
 pub fn walk_boot_tree(root: &Path) -> Result<Vec<TreeNode>> {
     let mut nodes = Vec::new();
     let mut dir_entries: Vec<_> = fs::read_dir(root)?.flatten().collect::<Vec<_>>();
-    dir_entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    dir_entries.sort_by_key(|a| a.file_name());
 
     for de in dir_entries {
         let path = de.path();

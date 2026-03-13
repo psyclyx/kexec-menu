@@ -171,7 +171,7 @@ fn cpio_append_file(buf: &mut Vec<u8>, name: &str, content: &[u8], ino: u32) {
     buf.extend_from_slice(content);
     // Pad file data to 4-byte boundary
     let pad = (4 - (content.len() % 4)) % 4;
-    buf.extend(std::iter::repeat(0u8).take(pad));
+    buf.extend(std::iter::repeat_n(0u8, pad));
 }
 
 fn cpio_append_trailer(buf: &mut Vec<u8>) {
@@ -205,7 +205,7 @@ fn cpio_append_entry(buf: &mut Vec<u8>, name: &str, ino: u32, mode: u32, filesiz
                  // Pad header+name to 4-byte boundary
     let hdr_total = 110 + namesize as usize;
     let pad = (4 - (hdr_total % 4)) % 4;
-    buf.extend(std::iter::repeat(0u8).take(pad));
+    buf.extend(std::iter::repeat_n(0u8, pad));
 }
 
 // --- kexec syscall wrappers ---

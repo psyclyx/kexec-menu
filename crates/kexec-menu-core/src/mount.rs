@@ -655,7 +655,7 @@ fn pattern_matches(pattern: &str, dev_name: &str) -> bool {
 fn device_allowed(dev_name: &str) -> bool {
     match option_env!("KEXEC_MENU_DISK_WHITELIST") {
         None => true,
-        Some(list) if list.is_empty() => true,
+        Some("") => true,
         Some(list) => list
             .split(',')
             .any(|pat| pattern_matches(pat.trim(), dev_name)),

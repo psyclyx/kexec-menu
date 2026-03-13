@@ -428,25 +428,22 @@ fn run_tui(
                         }
                     }
                     tui::Action::RefreshSources => {
-                        match mount::discover_sources() {
-                            Ok(new_sources) => {
-                                *sources = new_sources;
-                                trees.clear();
-                                for src in sources.iter() {
-                                    build_source_tree(src, trees);
-                                }
-                                // Re-append static entries
-                                let static_path = std::path::Path::new(tree::STATIC_ENTRIES_PATH);
-                                if let Ok(statics) = tree::load_static_entries(static_path) {
-                                    for (src, label, tree_nodes) in statics {
-                                        sources.push(src);
-                                        trees.push((label, tree_nodes));
-                                    }
-                                }
-                                let new_default = select::resolve_default(trees, None);
-                                view = tui::TreeView::build(sources, trees, new_default.as_ref());
+                        if let Ok(new_sources) = mount::discover_sources() {
+                            *sources = new_sources;
+                            trees.clear();
+                            for src in sources.iter() {
+                                build_source_tree(src, trees);
                             }
-                            Err(_) => {} // silently ignore rescan failure
+                            // Re-append static entries
+                            let static_path = std::path::Path::new(tree::STATIC_ENTRIES_PATH);
+                            if let Ok(statics) = tree::load_static_entries(static_path) {
+                                for (src, label, tree_nodes) in statics {
+                                    sources.push(src);
+                                    trees.push((label, tree_nodes));
+                                }
+                            }
+                            let new_default = select::resolve_default(trees, None);
+                            view = tui::TreeView::build(sources, trees, new_default.as_ref());
                         }
                     }
                     #[cfg(feature = "rescue-shell")]
