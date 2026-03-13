@@ -198,7 +198,11 @@ pub enum ItemState {
 impl Menu {
     pub fn new(items: Vec<MenuItem>, preselected: Option<usize>) -> Self {
         let cursor = preselected.unwrap_or(0).min(items.len().saturating_sub(1));
-        Self { items, cursor, preselected }
+        Self {
+            items,
+            cursor,
+            preselected,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -414,9 +418,7 @@ impl TreeView {
                     // Add entries under this leaf
                     for entry in &leaf.entries {
                         let is_default_entry = default
-                            .map(|sel| {
-                                sel.leaf_path == leaf.path && sel.entry_name == entry.name
-                            })
+                            .map(|sel| sel.leaf_path == leaf.path && sel.entry_name == entry.name)
                             .unwrap_or(false);
 
                         let entry_idx = nodes.len();
@@ -496,14 +498,12 @@ impl TreeView {
         if let Some(node) = self.nodes.get_mut(self.cursor) {
             match &node.kind {
                 NodeKind::Entry { .. } => return false, // entries don't toggle
-                NodeKind::Source { state, .. } => {
-                    match state {
-                        NodeSourceState::Encrypted
-                        | NodeSourceState::Error(_)
-                        | NodeSourceState::Empty => return false,
-                        _ => {}
-                    }
-                }
+                NodeKind::Source { state, .. } => match state {
+                    NodeSourceState::Encrypted
+                    | NodeSourceState::Error(_)
+                    | NodeSourceState::Empty => return false,
+                    _ => {}
+                },
                 _ => {}
             }
             node.expanded = !node.expanded;
@@ -553,7 +553,12 @@ impl TreeView {
 
     /// Ensure cursor is on a visible node. If not, move to the nearest visible ancestor.
     fn ensure_cursor_visible(&mut self) {
-        if self.nodes.get(self.cursor).map(|n| n.visible).unwrap_or(false) {
+        if self
+            .nodes
+            .get(self.cursor)
+            .map(|n| n.visible)
+            .unwrap_or(false)
+        {
             return;
         }
         // Move cursor up to nearest visible node
@@ -770,7 +775,10 @@ pub fn render_tree_view(w: &mut impl Write, view: &TreeView) -> io::Result<()> {
 
         match &node.kind {
             NodeKind::Source { label, state, .. } => {
-                let arrow = if matches!(state, NodeSourceState::Empty | NodeSourceState::Encrypted | NodeSourceState::Error(_)) {
+                let arrow = if matches!(
+                    state,
+                    NodeSourceState::Empty | NodeSourceState::Encrypted | NodeSourceState::Error(_)
+                ) {
                     " "
                 } else if node.expanded {
                     "▼"
@@ -824,7 +832,9 @@ pub fn render_tree_view(w: &mut impl Write, view: &TreeView) -> io::Result<()> {
                     reset_style(w)?;
                 }
             }
-            NodeKind::Leaf { name, entry_count, .. } => {
+            NodeKind::Leaf {
+                name, entry_count, ..
+            } => {
                 let arrow = if node.expanded { "▼" } else { "▶" };
                 write!(w, " {arrow} {indent}{name}")?;
                 if !node.expanded && *entry_count > 0 {
@@ -860,7 +870,10 @@ pub fn render_tree_view(w: &mut impl Write, view: &TreeView) -> io::Result<()> {
     #[cfg(feature = "rescue-shell")]
     write!(w, " ↑↓ navigate  Enter select/toggle  ←→ collapse/expand  f filesystem  r refresh  ! shell  q quit")?;
     #[cfg(not(feature = "rescue-shell"))]
-    write!(w, " ↑↓ navigate  Enter select/toggle  ←→ collapse/expand  f filesystem  r refresh  q quit")?;
+    write!(
+        w,
+        " ↑↓ navigate  Enter select/toggle  ←→ collapse/expand  f filesystem  r refresh  q quit"
+    )?;
     reset_style(w)?;
 
     w.flush()
@@ -907,12 +920,10 @@ pub fn handle_tree_view_key(view: &mut TreeView, key: &Key) -> Action {
         Key::Enter => {
             if let Some(node) = view.selected() {
                 match &node.kind {
-                    NodeKind::Entry { entry, source_idx } => {
-                        Action::Boot {
-                            source_idx: *source_idx,
-                            entry: entry.clone(),
-                        }
-                    }
+                    NodeKind::Entry { entry, source_idx } => Action::Boot {
+                        source_idx: *source_idx,
+                        entry: entry.clone(),
+                    },
                     NodeKind::Source { idx, state, .. } => {
                         if matches!(state, NodeSourceState::Encrypted) {
                             Action::UnlockSource(*idx)
@@ -1016,8 +1027,11 @@ pub fn is_bootable_file(path: &std::path::Path) -> bool {
     if n >= 2 && buf[0] == 0x4D && buf[1] == 0x5A {
         return true; // PE/EFI binary
     }
-    if n >= 0x206 && buf[0x202] == b'H' && buf[0x203] == b'd'
-        && buf[0x204] == b'r' && buf[0x205] == b'S'
+    if n >= 0x206
+        && buf[0x202] == b'H'
+        && buf[0x203] == b'd'
+        && buf[0x204] == b'r'
+        && buf[0x205] == b'S'
     {
         return true; // bzImage
     }
@@ -1030,8 +1044,8 @@ pub fn is_bootable_file(path: &std::path::Path) -> bool {
 /// List directory contents and build a menu for the file browser.
 pub fn build_file_menu(dir: &std::path::Path) -> io::Result<(Menu, Vec<DirEntry>)> {
     let mut entries = Vec::new();
-    let mut read_dir: Vec<_> = std::fs::read_dir(dir)?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut read_dir: Vec<_> =
+        std::fs::read_dir(dir)?.collect::<std::result::Result<Vec<_>, _>>()?;
     read_dir.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
     for de in read_dir {
@@ -1056,7 +1070,11 @@ pub fn build_file_menu(dir: &std::path::Path) -> io::Result<(Menu, Vec<DirEntry>
             } else {
                 e.name.clone()
             },
-            detail: if e.is_bootable { "[bootable]".into() } else { String::new() },
+            detail: if e.is_bootable {
+                "[bootable]".into()
+            } else {
+                String::new()
+            },
             state: ItemState::Normal,
         })
         .collect();
@@ -1073,9 +1091,7 @@ pub fn render_file_browser(
     root: &std::path::Path,
     menu: &Menu,
 ) -> io::Result<()> {
-    let rel = current_dir
-        .strip_prefix(root)
-        .unwrap_or(current_dir);
+    let rel = current_dir.strip_prefix(root).unwrap_or(current_dir);
     let path_display = if rel.as_os_str().is_empty() {
         "/".to_string()
     } else {
@@ -1101,15 +1117,23 @@ pub fn handle_file_browser_key(
     key: &Key,
 ) -> Action {
     match key {
-        Key::Up => { menu.move_up(); Action::Redraw }
-        Key::Down => { menu.move_down(); Action::Redraw }
+        Key::Up => {
+            menu.move_up();
+            Action::Redraw
+        }
+        Key::Down => {
+            menu.move_down();
+            Action::Redraw
+        }
         Key::Enter => {
             let idx = menu.selected_index();
             if let Some(entry) = dir_entries.get(idx) {
                 if entry.is_dir {
                     Action::OpenDir(idx)
                 } else if entry.is_bootable {
-                    Action::BootFile { path: entry.path.clone() }
+                    Action::BootFile {
+                        path: entry.path.clone(),
+                    }
                 } else {
                     Action::None
                 }
@@ -1132,8 +1156,8 @@ pub fn handle_file_browser_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use crate::types::Leaf;
+    use std::path::PathBuf;
 
     // --- Input parsing tests ---
 
@@ -1618,15 +1642,16 @@ mod tests {
     }
 
     fn test_tree() -> Vec<(String, Vec<TreeNode>)> {
-        vec![("nvme0n1p2".into(), vec![
-            TreeNode::Dir {
+        vec![(
+            "nvme0n1p2".into(),
+            vec![TreeNode::Dir {
                 name: "nixos".into(),
                 children: vec![
                     leaf_node("/boot/nixos/gen2", &["NixOS default", "NixOS fallback"]),
                     leaf_node("/boot/nixos/gen1", &["NixOS default"]),
                 ],
-            },
-        ])]
+            }],
+        )]
     }
 
     fn test_default() -> BootSelection {
@@ -1696,7 +1721,7 @@ mod tests {
         assert!(view.nodes[2].visible); // gen2
         assert!(view.nodes[3].visible); // entry default
         assert!(view.nodes[4].visible); // entry fallback
-        // gen1 visible (sibling of gen2, parent is expanded)
+                                        // gen1 visible (sibling of gen2, parent is expanded)
         assert!(view.nodes[5].visible);
         // gen1's entry hidden (gen1 is collapsed)
         assert!(!view.nodes[6].visible);
@@ -1858,7 +1883,10 @@ mod tests {
         assert_eq!(view.nodes.len(), 1);
         assert!(matches!(
             &view.nodes[0].kind,
-            NodeKind::Source { state: NodeSourceState::Encrypted, .. }
+            NodeKind::Source {
+                state: NodeSourceState::Encrypted,
+                ..
+            }
         ));
         // Can't toggle encrypted source
         let mut view = view;
@@ -1885,7 +1913,10 @@ mod tests {
             },
         ];
         let trees = vec![
-            ("nvme0n1p2".into(), vec![leaf_node("/boot/a/gen1", &["entry1"])]),
+            (
+                "nvme0n1p2".into(),
+                vec![leaf_node("/boot/a/gen1", &["entry1"])],
+            ),
             ("sda1".into(), vec![leaf_node("/boot/b/gen1", &["entry2"])]),
         ];
         let default = BootSelection {
@@ -1897,9 +1928,11 @@ mod tests {
         // First source collapsed, second expanded
         assert!(!view.nodes[0].expanded);
         // Find second source
-        let src2_idx = view.nodes.iter().position(|n| {
-            matches!(&n.kind, NodeKind::Source { idx: 1, .. })
-        }).unwrap();
+        let src2_idx = view
+            .nodes
+            .iter()
+            .position(|n| matches!(&n.kind, NodeKind::Source { idx: 1, .. }))
+            .unwrap();
         assert!(view.nodes[src2_idx].expanded);
     }
 
@@ -1942,7 +1975,10 @@ mod tests {
         assert_eq!(view.nodes.len(), 1);
         assert!(matches!(
             &view.nodes[0].kind,
-            NodeKind::Source { state: NodeSourceState::Empty, .. }
+            NodeKind::Source {
+                state: NodeSourceState::Empty,
+                ..
+            }
         ));
         let mut view = view;
         let changed = view.toggle();

@@ -52,8 +52,7 @@ pub fn serialize_boot_selection(sel: &BootSelection) -> Vec<u8> {
 
 /// Deserialize a boot selection from EFI variable payload (without attributes).
 pub fn deserialize_boot_selection(data: &[u8]) -> Result<BootSelection> {
-    let s = std::str::from_utf8(data)
-        .map_err(|_| Error::Parse("efi var: invalid UTF-8".into()))?;
+    let s = std::str::from_utf8(data).map_err(|_| Error::Parse("efi var: invalid UTF-8".into()))?;
     let mut lines = s.splitn(2, '\n');
     let leaf_path = lines
         .next()
@@ -181,29 +180,29 @@ fn cpio_append_trailer(buf: &mut Vec<u8>) {
 
 fn cpio_append_entry(buf: &mut Vec<u8>, name: &str, ino: u32, mode: u32, filesize: u32) {
     let namesize = name.len() as u32 + 1; // +1 for NUL
-    // Header: 6 magic + 13 fields * 8 hex chars = 110 bytes
-    // namesize includes NUL terminator
+                                          // Header: 6 magic + 13 fields * 8 hex chars = 110 bytes
+                                          // namesize includes NUL terminator
     let header = format!(
         "{}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}",
         std::str::from_utf8(CPIO_MAGIC).unwrap(),
-        ino,       // ino
-        mode,      // mode
-        0u32,      // uid
-        0u32,      // gid
-        1u32,      // nlink
-        0u32,      // mtime
-        filesize,  // filesize
-        0u32,      // devmajor
-        0u32,      // devminor
-        0u32,      // rdevmajor
-        0u32,      // rdevminor
-        namesize,  // namesize
-        0u32,      // check
+        ino,      // ino
+        mode,     // mode
+        0u32,     // uid
+        0u32,     // gid
+        1u32,     // nlink
+        0u32,     // mtime
+        filesize, // filesize
+        0u32,     // devmajor
+        0u32,     // devminor
+        0u32,     // rdevmajor
+        0u32,     // rdevminor
+        namesize, // namesize
+        0u32,     // check
     );
     buf.extend_from_slice(header.as_bytes());
     buf.extend_from_slice(name.as_bytes());
     buf.push(0); // NUL terminator
-    // Pad header+name to 4-byte boundary
+                 // Pad header+name to 4-byte boundary
     let hdr_total = 110 + namesize as usize;
     let pad = (4 - (hdr_total % 4)) % 4;
     buf.extend(std::iter::repeat(0u8).take(pad));
@@ -232,8 +231,8 @@ pub fn kexec_load(
     // Build initrd: original + optional extra segment
     let initrd_data = build_initrd(initrd_path, extra_initrd)?;
 
-    let c_cmdline = CString::new(cmdline)
-        .map_err(|_| Error::Parse("cmdline contains NUL byte".into()))?;
+    let c_cmdline =
+        CString::new(cmdline).map_err(|_| Error::Parse("cmdline contains NUL byte".into()))?;
 
     // We need to pass initrd as an fd. Write to a memfd.
     let initrd_fd = memfd_create("kexec-initrd")?;
@@ -272,8 +271,7 @@ fn build_initrd(initrd_path: &Path, extra: Option<&[u8]>) -> Result<Vec<u8>> {
 
 /// Create a memfd and return its raw file descriptor.
 fn memfd_create(name: &str) -> Result<i32> {
-    let c_name = CString::new(name)
-        .map_err(|_| Error::Parse("memfd name contains NUL".into()))?;
+    let c_name = CString::new(name).map_err(|_| Error::Parse("memfd name contains NUL".into()))?;
     let fd = unsafe { libc::memfd_create(c_name.as_ptr(), 0) };
     if fd < 0 {
         return Err(Error::Io(io::Error::last_os_error()));
@@ -286,8 +284,11 @@ fn write_all_fd(fd: i32, data: &[u8]) -> Result<()> {
     let mut offset = 0;
     while offset < data.len() {
         let written = unsafe {
-            libc::write(fd, data[offset..].as_ptr() as *const libc::c_void,
-                       data.len() - offset)
+            libc::write(
+                fd,
+                data[offset..].as_ptr() as *const libc::c_void,
+                data.len() - offset,
+            )
         };
         if written < 0 {
             return Err(Error::Io(io::Error::last_os_error()));
@@ -304,9 +305,7 @@ fn write_all_fd(fd: i32, data: &[u8]) -> Result<()> {
 pub fn kexec_exec() -> Result<()> {
     // reboot(LINUX_REBOOT_CMD_KEXEC)
     // First: reboot(LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2, LINUX_REBOOT_CMD_KEXEC, NULL)
-    let ret = unsafe {
-        libc::reboot(libc::LINUX_REBOOT_CMD_KEXEC)
-    };
+    let ret = unsafe { libc::reboot(libc::LINUX_REBOOT_CMD_KEXEC) };
     if ret != 0 {
         return Err(Error::Io(io::Error::last_os_error()));
     }
@@ -364,12 +363,7 @@ pub fn boot_entry(
         build_key_cpio(&key_path, key)
     });
 
-    kexec_load(
-        &kernel_path,
-        &initrd_path,
-        cmdline,
-        extra_initrd.as_deref(),
-    )?;
+    kexec_load(&kernel_path, &initrd_path, cmdline, extra_initrd.as_deref())?;
 
     // Persist selection to EFI var (best-effort, don't fail the boot)
     let sel = BootSelection {
@@ -464,7 +458,10 @@ mod tests {
         let cpio_str = String::from_utf8_lossy(&cpio);
         // Should contain "run" and "run/bootmenu-keys" directory entries
         assert!(cpio_str.contains("run\0"), "missing 'run' dir entry");
-        assert!(cpio_str.contains("run/bootmenu-keys\0"), "missing 'run/bootmenu-keys' dir entry");
+        assert!(
+            cpio_str.contains("run/bootmenu-keys\0"),
+            "missing 'run/bootmenu-keys' dir entry"
+        );
     }
 
     #[test]
@@ -493,7 +490,11 @@ mod tests {
         }
         // Should have at least 3 entries (dir "run", dir "run/bootmenu-keys",
         // file, trailer)
-        assert!(offsets.len() >= 4, "expected >=4 entries, got {}", offsets.len());
+        assert!(
+            offsets.len() >= 4,
+            "expected >=4 entries, got {}",
+            offsets.len()
+        );
         // Each offset should be 4-byte aligned
         for off in &offsets {
             assert_eq!(off % 4, 0, "entry at offset {} not 4-byte aligned", off);
@@ -514,6 +515,9 @@ mod tests {
         // Find the second 070701 (first is dir or file, depends)
         // For path "a" there are no parent dirs, so first entry is the file
         let mode_hex = &cpio[14..22];
-        assert_eq!(mode_hex, b"00008180", "file mode should be 0o100600 (hex 8180)");
+        assert_eq!(
+            mode_hex, b"00008180",
+            "file mode should be 0o100600 (hex 8180)"
+        );
     }
 }

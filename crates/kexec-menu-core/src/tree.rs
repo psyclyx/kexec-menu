@@ -30,7 +30,12 @@ pub fn parse_entries(json: &str) -> Result<Vec<Entry>> {
                 parser.advance();
                 break;
             }
-            Some(c) => return Err(Error::Parse(format!("expected ',' or ']', got '{}'", c as char))),
+            Some(c) => {
+                return Err(Error::Parse(format!(
+                    "expected ',' or ']', got '{}'",
+                    c as char
+                )))
+            }
             None => return Err(Error::Parse("unexpected end of input".into())),
         }
     }
@@ -77,7 +82,12 @@ fn parse_entry(p: &mut JsonParser) -> Result<Entry> {
                 p.advance();
                 break;
             }
-            Some(c) => return Err(Error::Parse(format!("expected ',' or '}}', got '{}'", c as char))),
+            Some(c) => {
+                return Err(Error::Parse(format!(
+                    "expected ',' or '}}', got '{}'",
+                    c as char
+                )))
+            }
             None => return Err(Error::Parse("unexpected end of input in object".into())),
         }
     }
@@ -87,7 +97,12 @@ fn parse_entry(p: &mut JsonParser) -> Result<Entry> {
     let initrd = initrd.ok_or_else(|| Error::Parse("missing field: initrd".into()))?;
     let cmdline = cmdline.ok_or_else(|| Error::Parse("missing field: cmdline".into()))?;
 
-    Ok(Entry { name, kernel, initrd, cmdline })
+    Ok(Entry {
+        name,
+        kernel,
+        initrd,
+        cmdline,
+    })
 }
 
 struct JsonParser<'a> {
@@ -97,7 +112,10 @@ struct JsonParser<'a> {
 
 impl<'a> JsonParser<'a> {
     fn new(input: &'a str) -> Self {
-        Self { bytes: input.as_bytes(), pos: 0 }
+        Self {
+            bytes: input.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -124,8 +142,14 @@ impl<'a> JsonParser<'a> {
                 self.advance();
                 Ok(())
             }
-            Some(b) => Err(Error::Parse(format!("expected '{}', got '{}'", ch as char, b as char))),
-            None => Err(Error::Parse(format!("expected '{}', got end of input", ch as char))),
+            Some(b) => Err(Error::Parse(format!(
+                "expected '{}', got '{}'",
+                ch as char, b as char
+            ))),
+            None => Err(Error::Parse(format!(
+                "expected '{}', got end of input",
+                ch as char
+            ))),
         }
     }
 
@@ -148,7 +172,9 @@ impl<'a> JsonParser<'a> {
                         Some(b'n') => s.push('\n'),
                         Some(b't') => s.push('\t'),
                         Some(b'r') => s.push('\r'),
-                        Some(c) => return Err(Error::Parse(format!("invalid escape: \\{}", c as char))),
+                        Some(c) => {
+                            return Err(Error::Parse(format!("invalid escape: \\{}", c as char)))
+                        }
                         None => return Err(Error::Parse("unterminated escape".into())),
                     }
                     self.advance();
@@ -171,9 +197,7 @@ impl<'a> JsonParser<'a> {
 /// leaves (directly or transitively) are omitted.
 pub fn walk_boot_tree(root: &Path) -> Result<Vec<TreeNode>> {
     let mut nodes = Vec::new();
-    let mut dir_entries: Vec<_> = fs::read_dir(root)?
-        .flatten()
-        .collect::<Vec<_>>();
+    let mut dir_entries: Vec<_> = fs::read_dir(root)?.flatten().collect::<Vec<_>>();
     dir_entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
     for de in dir_entries {
@@ -196,9 +220,17 @@ pub fn walk_boot_tree(root: &Path) -> Result<Vec<TreeNode>> {
             };
             let mtime = fs::metadata(&path)
                 .and_then(|m| m.modified())
-                .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+                .map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                })
                 .unwrap_or(0);
-            nodes.push(TreeNode::Leaf(Leaf { path, entries, mtime }));
+            nodes.push(TreeNode::Leaf(Leaf {
+                path,
+                entries,
+                mtime,
+            }));
         } else {
             // Recurse; skip subdirectories we can't read, only include if it has children
             if let Ok(children) = walk_boot_tree(&path) {
@@ -245,9 +277,19 @@ fn parse_static_config(json: &str) -> Result<Vec<StaticConfig>> {
         configs.push(parse_one_static_config(&mut parser)?);
         parser.skip_ws();
         match parser.peek() {
-            Some(b',') => { parser.advance(); }
-            Some(b']') => { parser.advance(); break; }
-            Some(c) => return Err(Error::Parse(format!("expected ',' or ']', got '{}'", c as char))),
+            Some(b',') => {
+                parser.advance();
+            }
+            Some(b']') => {
+                parser.advance();
+                break;
+            }
+            Some(c) => {
+                return Err(Error::Parse(format!(
+                    "expected ',' or ']', got '{}'",
+                    c as char
+                )))
+            }
             None => return Err(Error::Parse("unexpected end of input".into())),
         }
     }
@@ -284,14 +326,28 @@ fn parse_one_static_config(p: &mut JsonParser) -> Result<StaticConfig> {
             "kernel" => kernel = Some(val),
             "initrd" => initrd = Some(val),
             "cmdline" => cmdline = Some(val),
-            other => return Err(Error::Parse(format!("unknown field in static entry: {other}"))),
+            other => {
+                return Err(Error::Parse(format!(
+                    "unknown field in static entry: {other}"
+                )))
+            }
         }
 
         p.skip_ws();
         match p.peek() {
-            Some(b',') => { p.advance(); }
-            Some(b'}') => { p.advance(); break; }
-            Some(c) => return Err(Error::Parse(format!("expected ',' or '}}', got '{}'", c as char))),
+            Some(b',') => {
+                p.advance();
+            }
+            Some(b'}') => {
+                p.advance();
+                break;
+            }
+            Some(c) => {
+                return Err(Error::Parse(format!(
+                    "expected ',' or '}}', got '{}'",
+                    c as char
+                )))
+            }
             None => return Err(Error::Parse("unexpected end of input in object".into())),
         }
     }
@@ -302,7 +358,13 @@ fn parse_one_static_config(p: &mut JsonParser) -> Result<StaticConfig> {
     let initrd = initrd.ok_or_else(|| Error::Parse("missing field: initrd".into()))?;
     let cmdline = cmdline.ok_or_else(|| Error::Parse("missing field: cmdline".into()))?;
 
-    Ok(StaticConfig { name, dir, kernel, initrd, cmdline })
+    Ok(StaticConfig {
+        name,
+        dir,
+        kernel,
+        initrd,
+        cmdline,
+    })
 }
 
 /// Load static entries from a config file, returning (sources, trees) to append.
@@ -504,17 +566,25 @@ mod tests {
         make_leaf(&tmp.join("bravo"), &entry_json("b"));
 
         let tree = walk_boot_tree(&tmp).unwrap();
-        let names: Vec<&str> = tree.iter().map(|n| match n {
-            TreeNode::Leaf(l) => l.entries[0].name.as_str(),
-            _ => unreachable!(),
-        }).collect();
+        let names: Vec<&str> = tree
+            .iter()
+            .map(|n| match n {
+                TreeNode::Leaf(l) => l.entries[0].name.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
         assert_eq!(names, vec!["a", "b", "c"]);
     }
 
     fn tempdir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("kexec-test-{}", std::process::id()));
-        let dir = dir.join(format!("{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let dir = dir.join(format!(
+            "{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -558,7 +628,8 @@ mod tests {
 
     #[test]
     fn parse_static_unknown_field() {
-        let json = r#"[{"name":"x","dir":"/d","kernel":"k","initrd":"i","cmdline":"c","extra":"bad"}]"#;
+        let json =
+            r#"[{"name":"x","dir":"/d","kernel":"k","initrd":"i","cmdline":"c","extra":"bad"}]"#;
         let err = parse_static_config(json).unwrap_err();
         assert!(matches!(err, Error::Parse(ref s) if s.contains("unknown")));
     }
@@ -575,7 +646,11 @@ mod tests {
     fn load_static_entries_from_file() {
         let tmp = tempdir();
         let config_path = tmp.join("static.json");
-        fs::write(&config_path, r#"[{"name":"Memtest","dir":"/static/mt","kernel":"mt.bin","initrd":"","cmdline":""}]"#).unwrap();
+        fs::write(
+            &config_path,
+            r#"[{"name":"Memtest","dir":"/static/mt","kernel":"mt.bin","initrd":"","cmdline":""}]"#,
+        )
+        .unwrap();
 
         let result = load_static_entries(&config_path).unwrap();
         assert_eq!(result.len(), 1);
@@ -622,10 +697,13 @@ mod tests {
         let tree = walk_boot_tree(&tmp).unwrap();
         assert_eq!(tree.len(), 10);
 
-        let names: Vec<&str> = tree.iter().map(|n| match n {
-            TreeNode::Leaf(l) => l.entries[0].name.as_str(),
-            _ => unreachable!(),
-        }).collect();
+        let names: Vec<&str> = tree
+            .iter()
+            .map(|n| match n {
+                TreeNode::Leaf(l) => l.entries[0].name.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
         // Sorted by directory name (gen-01 .. gen-10)
         let expected: Vec<String> = (1..=10).map(|i| format!("entry-{i}")).collect();
         let expected_refs: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
@@ -646,7 +724,9 @@ mod tests {
             &entry_json("gaming"),
         );
         make_leaf(
-            &tmp.join("gen-1").join("specialisations").join("workstation"),
+            &tmp.join("gen-1")
+                .join("specialisations")
+                .join("workstation"),
             &entry_json("workstation"),
         );
 
@@ -688,7 +768,9 @@ mod tests {
             &entry_json("gaming"),
         );
         make_leaf(
-            &tmp.join("gen-1").join("specialisations").join("workstation"),
+            &tmp.join("gen-1")
+                .join("specialisations")
+                .join("workstation"),
             &entry_json("workstation"),
         );
 
@@ -702,10 +784,13 @@ mod tests {
                     TreeNode::Dir { name, children } => {
                         assert_eq!(name, "specialisations");
                         assert_eq!(children.len(), 2); // gaming, workstation
-                        let names: Vec<&str> = children.iter().map(|n| match n {
-                            TreeNode::Leaf(l) => l.entries[0].name.as_str(),
-                            _ => unreachable!(),
-                        }).collect();
+                        let names: Vec<&str> = children
+                            .iter()
+                            .map(|n| match n {
+                                TreeNode::Leaf(l) => l.entries[0].name.as_str(),
+                                _ => unreachable!(),
+                            })
+                            .collect();
                         assert_eq!(names, vec!["gaming", "workstation"]);
                     }
                     _ => panic!("expected dir for specialisations"),
@@ -726,17 +811,24 @@ mod tests {
         fs::create_dir_all(tmp.join("no-json")).unwrap();
         // Dir with corrupt entries.json (should be skipped)
         fs::create_dir_all(tmp.join("corrupt")).unwrap();
-        fs::write(tmp.join("corrupt").join("entries.json"), "not valid json!!!").unwrap();
+        fs::write(
+            tmp.join("corrupt").join("entries.json"),
+            "not valid json!!!",
+        )
+        .unwrap();
         // Another valid leaf
         make_leaf(&tmp.join("also-good"), &entry_json("also-good"));
 
         let tree = walk_boot_tree(&tmp).unwrap();
         // Only the two valid leaves should appear
         assert_eq!(tree.len(), 2);
-        let names: Vec<&str> = tree.iter().map(|n| match n {
-            TreeNode::Leaf(l) => l.entries[0].name.as_str(),
-            _ => unreachable!(),
-        }).collect();
+        let names: Vec<&str> = tree
+            .iter()
+            .map(|n| match n {
+                TreeNode::Leaf(l) => l.entries[0].name.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
         assert_eq!(names, vec!["also-good", "good"]); // sorted by dir name
     }
 

@@ -28,7 +28,8 @@ fn main() {
 
 fn print_help() {
     let version = env!("CARGO_PKG_VERSION");
-    eprint!("\
+    eprint!(
+        "\
 kexec-menu {version} — filesystem-agnostic kexec boot menu
 
 USAGE: kexec-menu [OPTIONS]
@@ -42,7 +43,8 @@ ENVIRONMENT:
   KEXEC_MENU_TIMEOUT          Autoboot timeout in seconds (0=fast, 65535=none)
   KEXEC_MENU_TIMEOUT_DEFAULT  Build-time default timeout (default: 5)
 
-COMPILE-TIME FEATURES:");
+COMPILE-TIME FEATURES:"
+    );
     #[cfg(feature = "full-fs-view")]
     eprint!("\n  full-fs-view     Browse mounted filesystems (keybind: f)");
     #[cfg(feature = "rescue-shell")]
@@ -100,14 +102,25 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
     let stdin = io::stdin();
     let stdout = io::stdout();
     let input = InputMux::new(stdin.lock().as_raw_fd(), evdev::EvdevReader::open());
-    let result = run_tui(input, stdout.lock(), &mut sources, &mut trees, default.as_ref(), timeout);
+    let result = run_tui(
+        input,
+        stdout.lock(),
+        &mut sources,
+        &mut trees,
+        default.as_ref(),
+        timeout,
+    );
 
     match result {
         Ok(TuiResult::Quit) => {
             eprintln!("kexec-menu: user quit");
             Ok(())
         }
-        Ok(TuiResult::Boot { leaf_path, entry, source_idx }) => {
+        Ok(TuiResult::Boot {
+            leaf_path,
+            entry,
+            source_idx,
+        }) => {
             let key_data = source_key_data(&sources, source_idx);
             if dry_run {
                 eprintln!("kexec-menu: would boot:");
@@ -127,7 +140,9 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
                     &entry.initrd,
                     &entry.cmdline,
                     &entry.name,
-                    key_data.as_ref().map(|(pw, uuid)| (pw.as_bytes(), uuid.as_str())),
+                    key_data
+                        .as_ref()
+                        .map(|(pw, uuid)| (pw.as_bytes(), uuid.as_str())),
                 );
                 #[cfg(feature = "rescue-shell")]
                 if let Err(e) = result {
@@ -176,8 +191,8 @@ fn run_auto_default(
     default: Option<&BootSelection>,
 ) -> Result<(), Box<dyn std::fmt::Display>> {
     let sel = default.ok_or_else(|| boxed("no default entry found"))?;
-    let leaf = find_leaf(trees, &sel.leaf_path)
-        .ok_or_else(|| boxed("default leaf not found in tree"))?;
+    let leaf =
+        find_leaf(trees, &sel.leaf_path).ok_or_else(|| boxed("default leaf not found in tree"))?;
     let entry = leaf
         .entries
         .iter()
@@ -281,7 +296,11 @@ fn resolve_timeout() -> Option<u16> {
     let default: u16 = option_env!("KEXEC_MENU_TIMEOUT_DEFAULT")
         .and_then(|v| v.parse().ok())
         .unwrap_or(5);
-    if default == u16::MAX { None } else { Some(default) }
+    if default == u16::MAX {
+        None
+    } else {
+        Some(default)
+    }
 }
 
 fn run_tui(
@@ -338,11 +357,22 @@ fn run_tui(
             None => {
                 tui::render_tree_view(&mut output, &view)?;
             }
-            Some(SideScreen::Passphrase { source_label, input: pw_input, error, .. }) => {
+            Some(SideScreen::Passphrase {
+                source_label,
+                input: pw_input,
+                error,
+                ..
+            }) => {
                 tui::render_passphrase(&mut output, source_label, pw_input, error.as_deref())?;
             }
             #[cfg(feature = "full-fs-view")]
-            Some(SideScreen::FileBrowser { source_label, current_dir, root, menu, .. }) => {
+            Some(SideScreen::FileBrowser {
+                source_label,
+                current_dir,
+                root,
+                menu,
+                ..
+            }) => {
                 tui::render_file_browser(&mut output, source_label, current_dir, root, menu)?;
             }
         }
@@ -360,11 +390,16 @@ fn run_tui(
                     tui::Action::Boot { source_idx, entry } => {
                         if let Some(leaf_path) = find_entry_leaf_path(&view) {
                             cleanup(&mut output)?;
-                            return Ok(TuiResult::Boot { leaf_path, entry, source_idx });
+                            return Ok(TuiResult::Boot {
+                                leaf_path,
+                                entry,
+                                source_idx,
+                            });
                         }
                     }
                     tui::Action::UnlockSource(idx) => {
-                        let label = sources.get(idx)
+                        let label = sources
+                            .get(idx)
                             .map(|s| s.label.clone())
                             .unwrap_or_default();
                         side = Some(SideScreen::Passphrase {
@@ -423,7 +458,11 @@ fn run_tui(
                     _ => {}
                 }
             }
-            Some(SideScreen::Passphrase { source_idx, input: pw_input, .. }) => {
+            Some(SideScreen::Passphrase {
+                source_idx,
+                input: pw_input,
+                ..
+            }) => {
                 let action = tui::handle_passphrase_key(pw_input, &key);
                 match action {
                     tui::Action::SubmitPassphrase => {
@@ -444,7 +483,8 @@ fn run_tui(
                                 side = None;
                             }
                             Err(e) => {
-                                if let Some(SideScreen::Passphrase { input, error, .. }) = &mut side {
+                                if let Some(SideScreen::Passphrase { input, error, .. }) = &mut side
+                                {
                                     *error = Some(format!("{e}"));
                                     input.clear();
                                 }
@@ -461,40 +501,42 @@ fn run_tui(
             }
             #[cfg(feature = "full-fs-view")]
             Some(SideScreen::FileBrowser {
-                current_dir, root, menu, dir_entries, ..
-            }) => {
-                match tui::handle_file_browser_key(menu, dir_entries, current_dir, root, &key) {
-                    tui::Action::BootFile { path } => {
-                        cleanup(&mut output)?;
-                        return Ok(TuiResult::BootFile { path });
-                    }
-                    tui::Action::OpenDir(idx) => {
-                        if let Some(entry) = dir_entries.get(idx) {
-                            let new_dir = entry.path.clone();
-                            if let Ok((file_menu, new_entries)) = tui::build_file_menu(&new_dir) {
-                                *current_dir = new_dir;
-                                *menu = file_menu;
-                                *dir_entries = new_entries;
-                            }
-                        }
-                    }
-                    tui::Action::DirUp => {
-                        if let Some(parent) = current_dir.parent() {
-                            let parent = parent.to_path_buf();
-                            if let Ok((file_menu, new_entries)) = tui::build_file_menu(&parent) {
-                                *current_dir = parent;
-                                *menu = file_menu;
-                                *dir_entries = new_entries;
-                            }
-                        }
-                    }
-                    tui::Action::Back => {
-                        side = None;
-                    }
-                    tui::Action::Redraw => {}
-                    _ => {}
+                current_dir,
+                root,
+                menu,
+                dir_entries,
+                ..
+            }) => match tui::handle_file_browser_key(menu, dir_entries, current_dir, root, &key) {
+                tui::Action::BootFile { path } => {
+                    cleanup(&mut output)?;
+                    return Ok(TuiResult::BootFile { path });
                 }
-            }
+                tui::Action::OpenDir(idx) => {
+                    if let Some(entry) = dir_entries.get(idx) {
+                        let new_dir = entry.path.clone();
+                        if let Ok((file_menu, new_entries)) = tui::build_file_menu(&new_dir) {
+                            *current_dir = new_dir;
+                            *menu = file_menu;
+                            *dir_entries = new_entries;
+                        }
+                    }
+                }
+                tui::Action::DirUp => {
+                    if let Some(parent) = current_dir.parent() {
+                        let parent = parent.to_path_buf();
+                        if let Ok((file_menu, new_entries)) = tui::build_file_menu(&parent) {
+                            *current_dir = parent;
+                            *menu = file_menu;
+                            *dir_entries = new_entries;
+                        }
+                    }
+                }
+                tui::Action::Back => {
+                    side = None;
+                }
+                tui::Action::Redraw => {}
+                _ => {}
+            },
         }
     }
 }
@@ -688,7 +730,11 @@ impl Read for InputMux {
         // No evdev devices — just read stdin
         let Some(evdev) = &self.evdev else {
             let n = unsafe {
-                libc::read(self.stdin_fd, out.as_mut_ptr() as *mut libc::c_void, out.len())
+                libc::read(
+                    self.stdin_fd,
+                    out.as_mut_ptr() as *mut libc::c_void,
+                    out.len(),
+                )
             };
             return if n < 0 {
                 Err(io::Error::last_os_error())
@@ -715,9 +761,7 @@ impl Read for InputMux {
         }
 
         loop {
-            let ret = unsafe {
-                libc::poll(pollfds.as_mut_ptr(), nfds as libc::nfds_t, -1)
-            };
+            let ret = unsafe { libc::poll(pollfds.as_mut_ptr(), nfds as libc::nfds_t, -1) };
             if ret < 0 {
                 let e = io::Error::last_os_error();
                 if e.kind() == io::ErrorKind::Interrupted {

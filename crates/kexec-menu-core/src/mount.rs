@@ -249,7 +249,8 @@ fn read_f2fs_label(f: &mut fs::File) -> Result<Option<String>> {
     let mut buf = [0u8; 512];
     f.read_exact(&mut buf)?;
     // Decode UTF-16LE, stop at first NUL u16
-    let u16s: Vec<u16> = buf.chunks_exact(2)
+    let u16s: Vec<u16> = buf
+        .chunks_exact(2)
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .take_while(|&c| c != 0)
         .collect();
@@ -259,7 +260,11 @@ fn read_f2fs_label(f: &mut fs::File) -> Result<Option<String>> {
     let s = String::from_utf16(&u16s)
         .map_err(|_| Error::Parse("invalid UTF-16 in F2FS label".into()))?;
     let trimmed = s.trim();
-    if trimmed.is_empty() { Ok(None) } else { Ok(Some(trimmed.to_string())) }
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
 }
 
 /// Extract a NUL-terminated UTF-8 label from a fixed-size buffer.
@@ -270,7 +275,11 @@ pub fn label_from_bytes(buf: &[u8]) -> Option<String> {
     }
     let s = std::str::from_utf8(&buf[..end]).ok()?;
     let trimmed = s.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 // --- Multi-device info from superblock ---
@@ -390,7 +399,12 @@ pub fn group_multi_device(probed: Vec<ProbeResult>) -> (Vec<DeviceGroup>, Vec<Pr
         g.devices.sort_by_key(|&(_, idx)| idx);
     }
     // Sort groups by first device path for deterministic output
-    groups.sort_by(|a, b| a.devices.first().map(|d| &d.0).cmp(&b.devices.first().map(|d| &d.0)));
+    groups.sort_by(|a, b| {
+        a.devices
+            .first()
+            .map(|d| &d.0)
+            .cmp(&b.devices.first().map(|d| &d.0))
+    });
 
     (groups, singles)
 }
@@ -502,8 +516,7 @@ pub fn read_partition_label(dev_name: &str) -> Option<String> {
     if let Ok(entries) = fs::read_dir(by_partlabel) {
         for entry in entries.flatten() {
             if let Ok(target) = fs::read_link(entry.path()) {
-                let target_name = target.file_name()
-                    .map(|n| n.to_string_lossy().into_owned());
+                let target_name = target.file_name().map(|n| n.to_string_lossy().into_owned());
                 if target_name.as_deref() == Some(dev_name) {
                     return Some(entry.file_name().to_string_lossy().into_owned());
                 }
@@ -519,8 +532,7 @@ pub fn read_device_uuid(dev_name: &str) -> Option<String> {
     if let Ok(entries) = fs::read_dir(by_uuid) {
         for entry in entries.flatten() {
             if let Ok(target) = fs::read_link(entry.path()) {
-                let target_name = target.file_name()
-                    .map(|n| n.to_string_lossy().into_owned());
+                let target_name = target.file_name().map(|n| n.to_string_lossy().into_owned());
                 if target_name.as_deref() == Some(dev_name) {
                     return Some(entry.file_name().to_string_lossy().into_owned());
                 }
@@ -536,7 +548,8 @@ const MOUNT_BASE: &str = "/mnt/kexec-menu";
 
 /// Mount a filesystem read-only and return the mount point.
 pub fn mount_ro(dev: &Path, fstype: FsType) -> Result<PathBuf> {
-    let dev_name = dev.file_name()
+    let dev_name = dev
+        .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -545,10 +558,11 @@ pub fn mount_ro(dev: &Path, fstype: FsType) -> Result<PathBuf> {
 
     let c_dev = path_to_cstring(dev)?;
     let c_target = path_to_cstring(&mount_point)?;
-    let mount_type = fstype.mount_type()
+    let mount_type = fstype
+        .mount_type()
         .ok_or_else(|| Error::Parse(format!("{} is not directly mountable", fstype.as_str())))?;
-    let c_fstype = CString::new(mount_type)
-        .map_err(|_| Error::Parse("invalid fstype string".into()))?;
+    let c_fstype =
+        CString::new(mount_type).map_err(|_| Error::Parse("invalid fstype string".into()))?;
 
     // MS_RDONLY = 1
     let flags: libc::c_ulong = libc::MS_RDONLY;
@@ -642,7 +656,8 @@ fn device_allowed(dev_name: &str) -> bool {
     match option_env!("KEXEC_MENU_DISK_WHITELIST") {
         None => true,
         Some(list) if list.is_empty() => true,
-        Some(list) => list.split(',')
+        Some(list) => list
+            .split(',')
             .any(|pat| pattern_matches(pat.trim(), dev_name)),
     }
 }
@@ -669,9 +684,7 @@ pub fn best_label(dev: &BlockDevice, fstype: Option<FsType>) -> String {
 const MULTI_DEVICE_TIMEOUT_SECS: u32 = 5;
 
 /// Probe all block devices, returning LUKS sources, multi-device probes, and singles.
-fn probe_all_devices(
-    devices: &[BlockDevice],
-) -> (Vec<Source>, Vec<ProbeResult>) {
+fn probe_all_devices(devices: &[BlockDevice]) -> (Vec<Source>, Vec<ProbeResult>) {
     let mut luks_sources = Vec::new();
     let mut probed = Vec::new();
 
@@ -712,9 +725,7 @@ fn probe_all_devices(
 
 /// Re-probe only devices relevant to incomplete groups.
 /// Returns new ProbeResults for devices that match any incomplete group's UUID.
-fn reprobe_for_groups(
-    incomplete: &[&DeviceGroup],
-) -> Vec<ProbeResult> {
+fn reprobe_for_groups(incomplete: &[&DeviceGroup]) -> Vec<ProbeResult> {
     let devices = enumerate_block_devices().unwrap_or_default();
     let mut results = Vec::new();
 
@@ -733,9 +744,9 @@ fn reprobe_for_groups(
             _ => continue,
         };
         // Only keep if it matches an incomplete group
-        let dominated = incomplete.iter().any(|g| {
-            g.fs_uuid == multi.fs_uuid && fstype_tag(g.fstype) == fstype_tag(fstype)
-        });
+        let dominated = incomplete
+            .iter()
+            .any(|g| g.fs_uuid == multi.fs_uuid && fstype_tag(g.fstype) == fstype_tag(fstype));
         if dominated {
             results.push(ProbeResult {
                 path: dev.path.clone(),
@@ -848,7 +859,8 @@ pub fn discover_sources() -> Result<Vec<Source>> {
     // Mount single-device filesystems (existing path)
     for single in &singles {
         let dev = devices.iter().find(|d| d.path == single.path);
-        let label = dev.map(|d| best_label(d, Some(single.fstype)))
+        let label = dev
+            .map(|d| best_label(d, Some(single.fstype)))
             .unwrap_or_else(|| single.path.display().to_string());
 
         match mount_ro(&single.path, single.fstype) {
@@ -863,8 +875,7 @@ pub fn discover_sources() -> Result<Vec<Source>> {
             }
             #[cfg(feature = "fs-bcachefs")]
             Err(Error::Io(ref e))
-                if single.fstype == FsType::Bcachefs
-                    && e.raw_os_error() == Some(ENOKEY) =>
+                if single.fstype == FsType::Bcachefs && e.raw_os_error() == Some(ENOKEY) =>
             {
                 sources.push(Source {
                     label,
@@ -895,7 +906,12 @@ fn format_group_label(group: &DeviceGroup, devices: &[BlockDevice]) -> String {
     let first_dev = &group.devices[0].0;
     if let Some(dev) = devices.iter().find(|d| d.path == *first_dev) {
         let label = best_label(dev, Some(group.fstype));
-        return format!("{} ({}×{})", label, group.nr_expected, group.fstype.as_str());
+        return format!(
+            "{} ({}×{})",
+            label,
+            group.nr_expected,
+            group.fstype.as_str()
+        );
     }
     format!(
         "{} ({}×{})",
@@ -913,8 +929,7 @@ fn format_group_label(group: &DeviceGroup, devices: &[BlockDevice]) -> String {
 /// For bcachefs: unlocks via bcachefs tool, then mounts directly.
 #[allow(unreachable_patterns, unused_variables)]
 pub fn unlock_and_mount(dev: &Path, passphrase: &str) -> Result<PathBuf> {
-    let fstype = probe_fs_type(dev)?
-        .ok_or_else(|| Error::Parse("unknown filesystem".into()))?;
+    let fstype = probe_fs_type(dev)?.ok_or_else(|| Error::Parse("unknown filesystem".into()))?;
     match fstype {
         #[cfg(feature = "fs-luks")]
         FsType::Luks => {
@@ -935,7 +950,8 @@ pub fn unlock_and_mount(dev: &Path, passphrase: &str) -> Result<PathBuf> {
 /// Open a LUKS container via cryptsetup. Returns the mapped device path.
 #[cfg(feature = "fs-luks")]
 fn unlock_luks(dev: &Path, passphrase: &str) -> Result<PathBuf> {
-    let dev_name = dev.file_name()
+    let dev_name = dev
+        .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "unknown".to_string());
     let mapper_name = format!("kexec-{}", dev_name);
@@ -1177,11 +1193,13 @@ mod tests {
     #[test]
     fn multi_device_btrfs_two_devices() {
         let tmp = test_device(0x10090); // must cover num_devices at 0x10088
-        // Write btrfs magic
+                                        // Write btrfs magic
         write_at(&tmp, BTRFS_MAGIC_OFFSET, BTRFS_MAGIC);
         // Write fsid UUID
-        let uuid = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
-                     0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0, 0x01];
+        let uuid = [
+            0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0,
+            0xF0, 0x01,
+        ];
         write_at(&tmp, BTRFS_FSID_OFFSET, &uuid);
         // num_devices = 2 (u64 LE)
         write_at(&tmp, BTRFS_NUM_DEVICES_OFFSET, &2u64.to_le_bytes());
@@ -1233,12 +1251,20 @@ mod tests {
             ProbeResult {
                 path: PathBuf::from("/dev/sda1"),
                 fstype: FsType::Btrfs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
+                multi: Some(MultiDeviceInfo {
+                    fs_uuid: uuid,
+                    nr_devices: 2,
+                    dev_idx: 0,
+                }),
             },
             ProbeResult {
                 path: PathBuf::from("/dev/sdb1"),
                 fstype: FsType::Btrfs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
+                multi: Some(MultiDeviceInfo {
+                    fs_uuid: uuid,
+                    nr_devices: 2,
+                    dev_idx: 0,
+                }),
             },
         ];
         let (groups, singles) = group_multi_device(probed);
@@ -1275,7 +1301,11 @@ mod tests {
             ProbeResult {
                 path: PathBuf::from("/dev/sda1"),
                 fstype: FsType::Btrfs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
+                multi: Some(MultiDeviceInfo {
+                    fs_uuid: uuid,
+                    nr_devices: 2,
+                    dev_idx: 0,
+                }),
             },
             ProbeResult {
                 path: PathBuf::from("/dev/sdb1"),
@@ -1285,7 +1315,11 @@ mod tests {
             ProbeResult {
                 path: PathBuf::from("/dev/sdc1"),
                 fstype: FsType::Btrfs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
+                multi: Some(MultiDeviceInfo {
+                    fs_uuid: uuid,
+                    nr_devices: 2,
+                    dev_idx: 0,
+                }),
             },
         ];
         let (groups, singles) = group_multi_device(probed);
@@ -1304,22 +1338,38 @@ mod tests {
             ProbeResult {
                 path: PathBuf::from("/dev/sda1"),
                 fstype: FsType::Btrfs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid_a, nr_devices: 2, dev_idx: 0 }),
+                multi: Some(MultiDeviceInfo {
+                    fs_uuid: uuid_a,
+                    nr_devices: 2,
+                    dev_idx: 0,
+                }),
             },
             ProbeResult {
                 path: PathBuf::from("/dev/sdb1"),
                 fstype: FsType::Btrfs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid_b, nr_devices: 2, dev_idx: 0 }),
+                multi: Some(MultiDeviceInfo {
+                    fs_uuid: uuid_b,
+                    nr_devices: 2,
+                    dev_idx: 0,
+                }),
             },
             ProbeResult {
                 path: PathBuf::from("/dev/sdc1"),
                 fstype: FsType::Btrfs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid_a, nr_devices: 2, dev_idx: 0 }),
+                multi: Some(MultiDeviceInfo {
+                    fs_uuid: uuid_a,
+                    nr_devices: 2,
+                    dev_idx: 0,
+                }),
             },
             ProbeResult {
                 path: PathBuf::from("/dev/sdd1"),
                 fstype: FsType::Btrfs,
-                multi: Some(MultiDeviceInfo { fs_uuid: uuid_b, nr_devices: 2, dev_idx: 0 }),
+                multi: Some(MultiDeviceInfo {
+                    fs_uuid: uuid_b,
+                    nr_devices: 2,
+                    dev_idx: 0,
+                }),
             },
         ];
         let (groups, singles) = group_multi_device(probed);
