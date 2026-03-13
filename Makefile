@@ -15,6 +15,9 @@
 #   make test               # run unit tests
 #   make clean              # remove build artifacts
 #
+# Component builds (from source — downloads automatically):
+#   make busybox ARCH=x86_64           # build static busybox from source
+#
 # UKI build targets (see README for full instructions):
 #   make logo                          # generate boot logo PPM
 #   make initrd ARCH=x86_64            # assemble initrd (needs BUSYBOX, CRYPTSETUP, BCACHEFS)
@@ -55,10 +58,13 @@ INITRD     = $(BUILD_DIR)/initrd.cpio
 KERNEL_OUT = $(BUILD_DIR)/vmlinuz
 UKI_OUT    = $(BUILD_DIR)/kexec-menu.efi
 
-# Paths to static binaries for initrd (user must provide)
+# Paths to static binaries for initrd (user-provided or built from source)
 BUSYBOX    ?=
 CRYPTSETUP ?=
 BCACHEFS   ?=
+
+# Component build versions (for building from source)
+BUSYBOX_VERSION ?= 1.36.1
 
 # Kernel build inputs
 KERNEL_SRC ?=
@@ -81,7 +87,7 @@ RUST_SOURCES = $(shell find crates -name '*.rs' -o -name 'Cargo.toml')
 
 # ─── Binary targets ──────────────────────────────────────────────────
 
-.PHONY: x86_64 aarch64 all test clean logo initrd kernel uki
+.PHONY: x86_64 aarch64 all test clean logo initrd kernel uki busybox
 
 x86_64: $(X86_64_BIN)
 aarch64: $(AARCH64_BIN)
@@ -95,6 +101,13 @@ $(AARCH64_BIN): Cargo.toml Cargo.lock $(RUST_SOURCES)
 
 test:
 	$(CARGO) test --target $(X86_64_TARGET)
+
+# ─── Component builds (from source) ─────────────────────────────────
+
+busybox: $(BUILD_DIR)/busybox
+
+$(BUILD_DIR)/busybox: scripts/mkbusybox.sh uki/initrd/busybox.config | $(BUILD_DIR)
+	ARCH=$(ARCH) BUSYBOX_VERSION=$(BUSYBOX_VERSION) BUILD_DIR=$(BUILD_DIR) OUTPUT=$@ ./scripts/mkbusybox.sh
 
 # ─── UKI build targets ───────────────────────────────────────────────
 
