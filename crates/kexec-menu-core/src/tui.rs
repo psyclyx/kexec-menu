@@ -857,6 +857,9 @@ pub fn render_tree_view(w: &mut impl Write, view: &TreeView) -> io::Result<()> {
     // Hint bar
     write!(w, "\r\n")?;
     set_dim(w)?;
+    #[cfg(feature = "rescue-shell")]
+    write!(w, " ↑↓ navigate  Enter select/toggle  ←→ collapse/expand  f filesystem  r refresh  ! shell  q quit")?;
+    #[cfg(not(feature = "rescue-shell"))]
     write!(w, " ↑↓ navigate  Enter select/toggle  ←→ collapse/expand  f filesystem  r refresh  q quit")?;
     reset_style(w)?;
 
@@ -917,6 +920,8 @@ pub fn handle_tree_view_key(view: &mut TreeView, key: &Key) -> Action {
         #[cfg(feature = "full-fs-view")]
         Key::Char('f') | Key::Char('F') => Action::OpenFileBrowser,
         Key::Char('r') | Key::Char('R') => Action::RefreshSources,
+        #[cfg(feature = "rescue-shell")]
+        Key::Char('!') => Action::DropToShell,
         Key::Char('q') | Key::Char('Q') => Action::Quit,
         _ => Action::None,
     }
@@ -971,6 +976,9 @@ pub enum Action {
     BootFile { path: std::path::PathBuf },
     /// Rescan block devices and rebuild sources.
     RefreshSources,
+    /// Drop to rescue shell (exec /bin/sh).
+    #[cfg(feature = "rescue-shell")]
+    DropToShell,
 }
 
 // --- Bootable file detection ---
@@ -2095,6 +2103,17 @@ mod tests {
 
         let action = handle_tree_view_key(&mut view, &Key::Char('R'));
         assert!(matches!(action, Action::RefreshSources));
+    }
+
+    #[test]
+    #[cfg(feature = "rescue-shell")]
+    fn handle_tree_view_bang_drops_to_shell() {
+        let sources = test_sources();
+        let trees = test_tree();
+        let mut view = TreeView::build(&sources, &trees, None);
+
+        let action = handle_tree_view_key(&mut view, &Key::Char('!'));
+        assert!(matches!(action, Action::DropToShell));
     }
 
     #[test]

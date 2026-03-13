@@ -85,15 +85,21 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
                 }
                 Ok(())
             } else {
-                kexec::boot_entry(
+                let result = kexec::boot_entry(
                     &leaf_path,
                     &entry.kernel,
                     &entry.initrd,
                     &entry.cmdline,
                     &entry.name,
                     key_data.as_ref().map(|(pw, uuid)| (pw.as_bytes(), uuid.as_str())),
-                )
-                .map_err(boxed)?;
+                );
+                #[cfg(feature = "rescue-shell")]
+                if let Err(e) = result {
+                    eprintln!("kexec-menu: kexec failed: {e}");
+                    return drop_to_shell();
+                }
+                #[cfg(not(feature = "rescue-shell"))]
+                result.map_err(boxed)?;
                 Ok(())
             }
         }
@@ -104,8 +110,24 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
                 eprintln!("  path: {}", path.display());
                 Ok(())
             } else {
-                kexec::boot_file(&path).map_err(boxed)?;
+                let result = kexec::boot_file(&path);
+                #[cfg(feature = "rescue-shell")]
+                if let Err(e) = result {
+                    eprintln!("kexec-menu: kexec failed: {e}");
+                    return drop_to_shell();
+                }
+                #[cfg(not(feature = "rescue-shell"))]
+                result.map_err(boxed)?;
                 Ok(())
+            }
+        }
+        #[cfg(feature = "rescue-shell")]
+        Ok(TuiResult::Shell) => {
+            if dry_run {
+                eprintln!("kexec-menu: would drop to rescue shell");
+                Ok(())
+            } else {
+                drop_to_shell()
             }
         }
         Err(e) => Err(boxed(e)),
@@ -152,6 +174,19 @@ fn boxed(e: impl std::fmt::Display + 'static) -> Box<dyn std::fmt::Display> {
     Box::new(e)
 }
 
+/// Exec into /bin/sh for rescue shell access.
+/// On success this does not return. On failure (shell not found), returns an error.
+#[cfg(feature = "rescue-shell")]
+fn drop_to_shell() -> Result<(), Box<dyn std::fmt::Display>> {
+    use std::ffi::CString;
+
+    eprintln!("kexec-menu: dropping to rescue shell");
+    let shell = CString::new("/bin/sh").unwrap();
+    let argv = [shell.as_ptr(), std::ptr::null()];
+    unsafe { libc::execv(shell.as_ptr(), argv.as_ptr()) };
+    Err(boxed(io::Error::last_os_error()))
+}
+
 /// Extract passphrase and device UUID for key handoff, if the source was unlocked.
 fn source_key_data(sources: &[Source], idx: usize) -> Option<(String, String)> {
     let src = sources.get(idx)?;
@@ -172,6 +207,8 @@ enum TuiResult {
     BootFile {
         path: PathBuf,
     },
+    #[cfg(feature = "rescue-shell")]
+    Shell,
 }
 
 enum SideScreen {
@@ -290,6 +327,11 @@ fn run_tui(
                             }
                             Err(_) => {} // silently ignore rescan failure
                         }
+                    }
+                    #[cfg(feature = "rescue-shell")]
+                    tui::Action::DropToShell => {
+                        cleanup(&mut output)?;
+                        return Ok(TuiResult::Shell);
                     }
                     tui::Action::Redraw | tui::Action::None => {}
                     _ => {}
