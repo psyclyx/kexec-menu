@@ -94,7 +94,7 @@ Build a locked-down binary with `--no-default-features`:
 
 ## Testing
 
-    cargo test --workspace      # unit tests (138 tests)
+    cargo test --workspace      # unit tests (154 tests)
     make test                   # unit tests via Makefile
 
 QEMU integration tests (boots a VM, mounts ext4/btrfs/LUKS, runs the menu):
