@@ -13,12 +13,14 @@
 # Usage (from default.nix):
 #   initrd-x86_64 = callPackage ./uki/initrd/initrd.nix {
 #     kexec-menu = self.kexec-menu;
-#     targetPkgsStatic = pkgs.pkgsStatic;
+#     inherit (self) busybox-x86_64 cryptsetup-x86_64 bcachefs-tools-x86_64;
 #   };
 #
 # Args:
 #   kexec-menu       — the static kexec-menu binary package (target arch)
-#   targetPkgsStatic — pkgsStatic for the target architecture
+#   busybox          — static busybox package (target arch)
+#   cryptsetup       — static cryptsetup package (target arch)
+#   bcachefs-tools   — static bcachefs-tools package (target arch)
 #   rescueShell      — include sh symlink for rescue shell (default: false)
 #   staticEntries    — path to static.json, or null
 #   extraContents    — attrset of { "/path" = source; } for additional files
@@ -27,16 +29,15 @@
   runCommand,
   cpio,
   kexec-menu,
-  targetPkgsStatic,
+  busybox,
+  cryptsetup,
+  bcachefs-tools,
   rescueShell ? false,
   staticEntries ? null,
   extraContents ? {},
 }:
 
 let
-  busybox = targetPkgsStatic.busybox;
-  cryptsetup = targetPkgsStatic.cryptsetup;
-  bcachefs-tools = targetPkgsStatic.bcachefs-tools;
 
   # Applets needed by /init
   initApplets = [ "mount" "umount" "mkdir" "sleep" "reboot" "echo" ];

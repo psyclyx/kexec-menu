@@ -1,24 +1,31 @@
 # Top-level entry point for nix-build / nix-env.
 #
 # Attributes:
-#   kexec-menu          — static x86_64 binary
-#   kexec-menu-aarch64  — static aarch64 binary (cross-compiled)
-#   kernel-x86_64       — minimal kernel for x86_64 UKI
-#   kernel-aarch64      — minimal kernel for aarch64 UKI
-#   initrd-x86_64       — CPIO initrd for x86_64 UKI
-#   initrd-aarch64      — CPIO initrd for aarch64 UKI
-#   logo                — boot logo PPM (80x80, base16-colorizable)
-#   uki-x86_64          — complete UKI EFI binary for x86_64
-#   uki-aarch64          — complete UKI EFI binary for aarch64
-#   tests.installer     — NixOS VM test for the installer/module
+#   kexec-menu              — static x86_64 binary
+#   kexec-menu-aarch64      — static aarch64 binary (cross-compiled)
+#   busybox-x86_64          — static busybox for x86_64 initrd
+#   busybox-aarch64         — static busybox for aarch64 initrd
+#   cryptsetup-x86_64       — static cryptsetup for x86_64 initrd
+#   cryptsetup-aarch64      — static cryptsetup for aarch64 initrd
+#   bcachefs-tools-x86_64   — static bcachefs-tools for x86_64 initrd
+#   bcachefs-tools-aarch64  — static bcachefs-tools for aarch64 initrd
+#   kernel-x86_64           — minimal kernel for x86_64 UKI
+#   kernel-aarch64          — minimal kernel for aarch64 UKI
+#   initrd-x86_64           — CPIO initrd for x86_64 UKI
+#   initrd-aarch64          — CPIO initrd for aarch64 UKI
+#   logo                    — boot logo PPM (80x80, base16-colorizable)
+#   uki-x86_64              — complete UKI EFI binary for x86_64
+#   uki-aarch64             — complete UKI EFI binary for aarch64
+#   tests.installer         — NixOS VM test for the installer/module
 #
 # Usage:
-#   nix-build             # builds kexec-menu (x86_64)
+#   nix-build                          # builds kexec-menu (x86_64)
 #   nix-build -A kexec-menu-aarch64
+#   nix-build -A busybox-x86_64
+#   nix-build -A cryptsetup-x86_64
+#   nix-build -A bcachefs-tools-x86_64
 #   nix-build -A kernel-x86_64
-#   nix-build -A kernel-aarch64
 #   nix-build -A initrd-x86_64
-#   nix-build -A initrd-aarch64
 #   nix-build -A logo
 #   nix-build -A uki-x86_64
 #   nix-build -A uki-aarch64
@@ -33,6 +40,8 @@ let
   logo = pkgs.callPackage ./uki/logo/logo.nix {};
 
   self = {
+    # ── Binary ──────────────────────────────────────────────────────────
+
     kexec-menu = musl64.callPackage ./package.nix {
       target = "x86_64-unknown-linux-musl";
     };
@@ -41,7 +50,22 @@ let
       target = "aarch64-unknown-linux-musl";
     };
 
+    # ── Initrd components ───────────────────────────────────────────────
+
+    busybox-x86_64 = musl64.pkgsStatic.busybox;
+    busybox-aarch64 = aarch64Musl.pkgsStatic.busybox;
+
+    cryptsetup-x86_64 = musl64.pkgsStatic.cryptsetup;
+    cryptsetup-aarch64 = aarch64Musl.pkgsStatic.cryptsetup;
+
+    bcachefs-tools-x86_64 = musl64.pkgsStatic.bcachefs-tools;
+    bcachefs-tools-aarch64 = aarch64Musl.pkgsStatic.bcachefs-tools;
+
+    # ── Logo ────────────────────────────────────────────────────────────
+
     inherit logo;
+
+    # ── Kernel ──────────────────────────────────────────────────────────
 
     kernel-x86_64 = pkgs.callPackage ./uki/kernel/kernel.nix {
       arch = "x86_64";
@@ -51,15 +75,23 @@ let
       arch = "aarch64";
     };
 
+    # ── Initrd ──────────────────────────────────────────────────────────
+
     initrd-x86_64 = pkgs.callPackage ./uki/initrd/initrd.nix {
       kexec-menu = self.kexec-menu;
-      targetPkgsStatic = musl64.pkgsStatic;
+      busybox = self.busybox-x86_64;
+      cryptsetup = self.cryptsetup-x86_64;
+      bcachefs-tools = self.bcachefs-tools-x86_64;
     };
 
     initrd-aarch64 = pkgs.callPackage ./uki/initrd/initrd.nix {
       kexec-menu = self.kexec-menu-aarch64;
-      targetPkgsStatic = aarch64Musl.pkgsStatic;
+      busybox = self.busybox-aarch64;
+      cryptsetup = self.cryptsetup-aarch64;
+      bcachefs-tools = self.bcachefs-tools-aarch64;
     };
+
+    # ── UKI ─────────────────────────────────────────────────────────────
 
     uki-x86_64 = pkgs.callPackage ./uki/uki.nix {
       arch = "x86_64";
@@ -72,6 +104,8 @@ let
       initrd = self.initrd-aarch64;
       inherit logo;
     };
+
+    # ── Tests ───────────────────────────────────────────────────────────
 
     tests = {
       installer = import ./tests/nixos/installer.nix;
