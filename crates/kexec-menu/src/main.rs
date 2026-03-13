@@ -12,6 +12,11 @@ use kexec_menu_core::tui;
 use kexec_menu_core::types::{BootSelection, Source, SourceState, TreeNode};
 
 fn main() {
+    if std::env::args().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return;
+    }
+
     let dry_run = std::env::args().any(|a| a == "--dry-run");
     let auto_default = std::env::args().any(|a| a == "--auto-default");
 
@@ -19,6 +24,28 @@ fn main() {
         eprintln!("kexec-menu: {e}");
         process::exit(1);
     }
+}
+
+fn print_help() {
+    let version = env!("CARGO_PKG_VERSION");
+    eprint!("\
+kexec-menu {version} — filesystem-agnostic kexec boot menu
+
+USAGE: kexec-menu [OPTIONS]
+
+OPTIONS:
+  --dry-run        Print what would be booted, don't kexec
+  --auto-default   Boot the default entry without showing the menu
+  -h, --help       Show this help
+
+COMPILE-TIME FEATURES:");
+    #[cfg(feature = "full-fs-view")]
+    eprint!("\n  full-fs-view     Browse mounted filesystems (keybind: f)");
+    #[cfg(feature = "rescue-shell")]
+    eprint!("\n  rescue-shell     Drop to /bin/sh on failure or keybind (s)");
+    #[cfg(feature = "disk-whitelist")]
+    eprint!("\n  disk-whitelist   Filter disks via KEXEC_MENU_DISK_WHITELIST");
+    eprintln!();
 }
 
 fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Display>> {
