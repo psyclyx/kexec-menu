@@ -304,6 +304,42 @@ else
     PASS=false
 fi
 
+# S4: disk-whitelist test — run whitelisted binary (only vda allowed)
+if [ -x /bin/kexec-menu-whitelist ]; then
+    echo ""
+    echo "=== S4: disk-whitelist test ==="
+    # Unmount everything kexec-menu mounted, so we start clean
+    busybox umount /mnt/kexec-menu/* 2>/dev/null
+    /bin/kexec-menu-whitelist --dry-run --auto-default 2>/tmp/whitelist-output
+    WL_STATUS=$?
+    WL_OUTPUT="$(cat /tmp/whitelist-output)"
+    echo "$WL_OUTPUT"
+
+    if [ "$WL_STATUS" -ne 0 ]; then
+        echo "FAIL: S4 whitelist binary exited with status $WL_STATUS"
+        PASS=false
+    elif ! echo "$WL_OUTPUT" | busybox grep -q "would boot:"; then
+        echo "FAIL: S4 whitelist binary missing 'would boot:'"
+        PASS=false
+    else
+        echo "OK: S4 whitelist binary booted successfully"
+    fi
+
+    # Verify only vda was mounted (no btrfs/xfs/f2fs mounts from other disks)
+    WL_BTRFS=$(busybox grep -c "btrfs" /proc/mounts 2>/dev/null || true)
+    WL_XFS=$(busybox grep -c "xfs" /proc/mounts 2>/dev/null || true)
+    WL_F2FS=$(busybox grep -c "f2fs" /proc/mounts 2>/dev/null || true)
+    if [ "${WL_BTRFS:-0}" -gt 0 ] || [ "${WL_XFS:-0}" -gt 0 ] || [ "${WL_F2FS:-0}" -gt 0 ]; then
+        echo "FAIL: S4 whitelist binary mounted non-whitelisted filesystems"
+        echo "  btrfs=$WL_BTRFS xfs=$WL_XFS f2fs=$WL_F2FS"
+        PASS=false
+    else
+        echo "OK: S4 only whitelisted device (vda) was mounted"
+    fi
+else
+    echo "WARN: S4 skipped (kexec-menu-whitelist not found)"
+fi
+
 echo ""
 if [ "$PASS" = true ]; then
     echo "TEST_RESULT=PASS"

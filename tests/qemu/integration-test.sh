@@ -55,11 +55,25 @@ if ! $SKIP_BUILD; then
     echo "building kexec-menu for $TARGET..."
     cargo build --manifest-path "$REPO_ROOT/Cargo.toml" \
         --target "$TARGET" --release -p kexec-menu 2>&1
+    # Build a second binary with disk-whitelist baked to "vda" for S4 test
+    echo "building kexec-menu (disk-whitelist=vda) for $TARGET..."
+    KEXEC_MENU_DISK_WHITELIST=vda cargo build --manifest-path "$REPO_ROOT/Cargo.toml" \
+        --target "$TARGET" --release -p kexec-menu 2>&1
+    cp "$REPO_ROOT/target/$TARGET/release/kexec-menu" \
+       "$REPO_ROOT/target/$TARGET/release/kexec-menu-whitelist"
+    # Rebuild normal binary (without whitelist env)
+    cargo build --manifest-path "$REPO_ROOT/Cargo.toml" \
+        --target "$TARGET" --release -p kexec-menu 2>&1
 fi
 
 BINARY="$REPO_ROOT/target/$TARGET/release/kexec-menu"
+BINARY_WHITELIST="$REPO_ROOT/target/$TARGET/release/kexec-menu-whitelist"
 if [[ ! -f "$BINARY" ]]; then
     echo "error: binary not found at $BINARY" >&2
+    exit 1
+fi
+if [[ ! -f "$BINARY_WHITELIST" ]]; then
+    echo "error: whitelist binary not found at $BINARY_WHITELIST" >&2
     exit 1
 fi
 
@@ -108,6 +122,7 @@ for cmd in sh mount umount mkdir ls cat sleep poweroff insmod grep echo printf d
 done
 
 cp "$BINARY" "$INITRD_DIR/bin/kexec-menu"
+cp "$BINARY_WHITELIST" "$INITRD_DIR/bin/kexec-menu-whitelist"
 if [[ -n "${MKFS_BTRFS_STATIC:-}" && -f "$MKFS_BTRFS_STATIC" ]]; then
     cp "$MKFS_BTRFS_STATIC" "$INITRD_DIR/bin/mkfs.btrfs"
 fi
