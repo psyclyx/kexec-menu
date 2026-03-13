@@ -11,8 +11,8 @@ pkgs.mkShell {
     # Rust toolchain (targets musl)
     musl64.buildPackages.rustc
     musl64.buildPackages.cargo
+    musl64.buildPackages.clippy
     pkgs.rust-analyzer
-    pkgs.clippy
 
     # Testing
     pkgs.qemu
