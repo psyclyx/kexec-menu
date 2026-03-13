@@ -21,6 +21,8 @@ pkgs.writeShellApplication {
     pkgs.qemu
     pkgs.e2fsprogs       # mke2fs, fuse2fs, debugfs
     pkgs.btrfs-progs     # mkfs.btrfs
+    pkgs.xfsprogs        # mkfs.xfs
+    pkgs.f2fs-tools      # mkfs.f2fs
     pkgs.fuse            # fusermount
     pkgs.cpio
     pkgs.pkgsStatic.busybox
@@ -46,7 +48,7 @@ pkgs.writeShellApplication {
     trap 'rm -rf "$BUILD_DIR"' EXIT
 
     BINARY="${kexec-menu}/bin/kexec-menu"
-    TIMEOUT_SECS=60
+    TIMEOUT_SECS=90
 
     echo "binary: $BINARY"
     echo "kernel: $QEMU_KERNEL"
@@ -61,6 +63,14 @@ pkgs.writeShellApplication {
     # Empty 64MB disk — formatted as LUKS+ext4 inside QEMU by init-test.sh
     LUKS_DISK="$BUILD_DIR/test-disk-luks.raw"
     truncate -s 64M "$LUKS_DISK"
+    # 64MB disk — pre-formatted as XFS, populated inside QEMU by init-test.sh
+    XFS_DISK="$BUILD_DIR/test-disk-xfs.raw"
+    truncate -s 64M "$XFS_DISK"
+    mkfs.xfs -f -L "test-xfs" "$XFS_DISK"
+    # 64MB disk — pre-formatted as F2FS, populated inside QEMU by init-test.sh
+    F2FS_DISK="$BUILD_DIR/test-disk-f2fs.raw"
+    truncate -s 64M "$F2FS_DISK"
+    mkfs.f2fs -f -l "test-f2fs" "$F2FS_DISK"
 
     # --- Create initrd ---
     INITRD="$BUILD_DIR/initrd-test.cpio"
@@ -96,6 +106,10 @@ pkgs.writeShellApplication {
         "crypto/xor.ko"
         "lib/raid6/raid6_pq.ko"
         "fs/btrfs/btrfs.ko"
+        # xfs
+        "fs/xfs/xfs.ko"
+        # f2fs
+        "fs/f2fs/f2fs.ko"
         # dm-crypt (for LUKS) and dependency chain
         "drivers/dax/dax.ko"
         "drivers/md/dm-mod.ko"
@@ -148,8 +162,10 @@ pkgs.writeShellApplication {
             -drive "file=$DISK,format=raw,if=virtio,readonly=on" \
             -drive "file=$BTRFS_DISK,format=raw,if=virtio" \
             -drive "file=$LUKS_DISK,format=raw,if=virtio" \
+            -drive "file=$XFS_DISK,format=raw,if=virtio" \
+            -drive "file=$F2FS_DISK,format=raw,if=virtio" \
             -cpu max \
-            -m 256M \
+            -m 512M \
             -nographic \
             -no-reboot \
         > "$OUTPUT_FILE" 2>&1 || true

@@ -7,6 +7,8 @@
 #   /dev/vda — pre-formatted ext4 disk with boot tree (read-only)
 #   /dev/vdb — empty raw disk, formatted as btrfs here (if mkfs.btrfs present)
 #   /dev/vdc — empty raw disk, formatted as LUKS+ext4 here (if cryptsetup present)
+#   /dev/vdd — pre-formatted XFS disk, populated here
+#   /dev/vde — pre-formatted F2FS disk, populated here
 #
 
 export PATH=/bin
@@ -29,6 +31,7 @@ if [ -d /lib/modules ]; then
         crc16 crc32c-cryptoapi mbcache jbd2 \
         ext4 \
         xor raid6_pq btrfs \
+        xfs f2fs \
         cryptd aesni-intel xts \
         dm-crypt; do
         if modprobe "$mod" 2>/dev/null; then
@@ -129,6 +132,50 @@ elif [ -b /dev/vdc ]; then
     echo "  LUKS magic written"
 fi
 
+# Set up XFS test disk on /dev/vdd (pre-formatted, populate boot tree here)
+XFS_SETUP=false
+if [ -b /dev/vdd ]; then
+    echo "setting up XFS test disk on /dev/vdd..."
+    mkdir -p /mnt/xfs
+    if mount -t xfs /dev/vdd /mnt/xfs; then
+        mkdir -p /mnt/xfs/boot/nixos/generation-1
+        echo "DUMMY KERNEL" > /mnt/xfs/boot/nixos/generation-1/vmlinuz
+        echo "DUMMY INITRD" > /mnt/xfs/boot/nixos/generation-1/initrd
+        cat > /mnt/xfs/boot/nixos/generation-1/entries.json <<'JSON'
+[
+  {"name": "default", "kernel": "vmlinuz", "initrd": "initrd", "cmdline": "console=ttyS0 root=/dev/vdd"}
+]
+JSON
+        umount /mnt/xfs
+        XFS_SETUP=true
+        echo "  XFS disk ready"
+    else
+        echo "  WARN: failed to mount XFS on /dev/vdd"
+    fi
+fi
+
+# Set up F2FS test disk on /dev/vde (pre-formatted, populate boot tree here)
+F2FS_SETUP=false
+if [ -b /dev/vde ]; then
+    echo "setting up F2FS test disk on /dev/vde..."
+    mkdir -p /mnt/f2fs
+    if mount -t f2fs /dev/vde /mnt/f2fs; then
+        mkdir -p /mnt/f2fs/boot/nixos/generation-1
+        echo "DUMMY KERNEL" > /mnt/f2fs/boot/nixos/generation-1/vmlinuz
+        echo "DUMMY INITRD" > /mnt/f2fs/boot/nixos/generation-1/initrd
+        cat > /mnt/f2fs/boot/nixos/generation-1/entries.json <<'JSON'
+[
+  {"name": "default", "kernel": "vmlinuz", "initrd": "initrd", "cmdline": "console=ttyS0 root=/dev/vde"}
+]
+JSON
+        umount /mnt/f2fs
+        F2FS_SETUP=true
+        echo "  F2FS disk ready"
+    else
+        echo "  WARN: failed to mount F2FS on /dev/vde"
+    fi
+fi
+
 # Run kexec-menu in auto-default dry-run mode, capture stderr
 /bin/kexec-menu --dry-run --auto-default 2>/tmp/kexec-output
 STATUS=$?
@@ -177,6 +224,26 @@ if [ "$LUKS_SETUP" = true ]; then
         PASS=false
     else
         echo "OK: LUKS source detected as encrypted (not mounted)"
+    fi
+fi
+
+# If XFS was set up, verify kexec-menu mounted it
+if [ "$XFS_SETUP" = true ]; then
+    if busybox grep -q "xfs" /proc/mounts 2>/dev/null; then
+        echo "OK: XFS source was mounted by kexec-menu"
+    else
+        echo "FAIL: XFS source not mounted (expected /mnt/kexec-menu/vdd)"
+        PASS=false
+    fi
+fi
+
+# If F2FS was set up, verify kexec-menu mounted it
+if [ "$F2FS_SETUP" = true ]; then
+    if busybox grep -q "f2fs" /proc/mounts 2>/dev/null; then
+        echo "OK: F2FS source was mounted by kexec-menu"
+    else
+        echo "FAIL: F2FS source not mounted (expected /mnt/kexec-menu/vde)"
+        PASS=false
     fi
 fi
 
