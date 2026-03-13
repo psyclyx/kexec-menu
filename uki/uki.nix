@@ -22,6 +22,7 @@
 #   cmdline      — kernel command line to embed
 #   extraConfig  — additional kernel structuredExtraConfig attrs
 #   extraModules — additional kernel modules to enable
+#   logo         — path to 80x80 PPM boot logo (or null for default Tux)
 {
   lib,
   runCommand,
@@ -31,11 +32,12 @@
   cmdline ? "console=tty0",
   extraConfig ? {},
   extraModules ? [],
+  logo ? null,
 }:
 
 let
   kernel = callPackage ./kernel/kernel.nix {
-    inherit arch extraConfig extraModules;
+    inherit arch extraConfig extraModules logo;
     initramfs = initrd;
     inherit cmdline;
   };

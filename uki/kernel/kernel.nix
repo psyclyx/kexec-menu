@@ -10,6 +10,7 @@
 #   cmdline      — kernel command line to embed (or "" for none)
 #   extraConfig  — additional structuredExtraConfig attrs
 #   extraModules — additional kernel modules to enable
+#   logo         — path to 80x80 PPM file to replace the default boot logo (or null)
 {
   lib,
   linuxPackages_latest,
@@ -18,6 +19,7 @@
   cmdline ? "",
   extraConfig ? {},
   extraModules ? [],
+  logo ? null,
 }:
 
 let
@@ -74,7 +76,7 @@ let
   mergedConfig = commonConfig // archConfig // moduleConfig
     // initramfsConfig // cmdlineConfig // extraConfig;
 
-  kernel = linuxPackages_latest.kernel.override {
+  kernel = (linuxPackages_latest.kernel.override {
     # Start from tinyconfig instead of defconfig
     autoModules = false;
     # Disable module support — everything built-in
@@ -82,6 +84,10 @@ let
     structuredExtraConfig = mergedConfig;
     # Suppress interactive config prompts for new options
     ignoreConfigErrors = true;
-  };
+  }).overrideAttrs (old: lib.optionalAttrs (logo != null) {
+    postPatch = (old.postPatch or "") + ''
+      cp ${logo} drivers/video/logo/logo_linux_clut224.ppm
+    '';
+  });
 
 in kernel
