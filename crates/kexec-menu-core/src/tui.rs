@@ -866,6 +866,19 @@ pub fn render_tree_view(w: &mut impl Write, view: &TreeView) -> io::Result<()> {
     w.flush()
 }
 
+/// Render a countdown status line below the tree view.
+/// Call this after `render_tree_view()` during the autoboot countdown.
+pub fn render_countdown(w: &mut impl Write, remaining: u16) -> io::Result<()> {
+    write!(w, "\r\n")?;
+    set_bold(w)?;
+    write!(w, " Booting default in {remaining}s...")?;
+    reset_style(w)?;
+    set_dim(w)?;
+    write!(w, "  (press any key to cancel)")?;
+    reset_style(w)?;
+    w.flush()
+}
+
 /// Handle a key press on the tree view screen.
 pub fn handle_tree_view_key(view: &mut TreeView, key: &Key) -> Action {
     match key {

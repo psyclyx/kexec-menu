@@ -27,6 +27,7 @@ const SYS_KEXEC_FILE_LOAD: libc::c_long = 294;
 // This is a simple text format, easy to parse and debug.
 
 const EFI_VAR_NAME: &str = "KexecMenuSelection";
+const EFI_TIMEOUT_VAR: &str = "KexecMenuTimeout";
 // Project GUID for kexec-menu EFI variables.
 const EFI_VAR_GUID: &str = "e518894a-0634-4b2d-b448-e654c0eda6a7";
 
@@ -67,6 +68,22 @@ pub fn deserialize_boot_selection(data: &[u8]) -> Result<BootSelection> {
         leaf_path: PathBuf::from(leaf_path),
         entry_name: entry_name.to_string(),
     })
+}
+
+/// Read the autoboot timeout from the EFI variable `KexecMenuTimeout`.
+/// Returns None if the variable doesn't exist or can't be read.
+/// Value is a u16 in seconds (little-endian).
+pub fn read_efi_timeout() -> Option<u16> {
+    let path = format!(
+        "/sys/firmware/efi/efivars/{}-{}",
+        EFI_TIMEOUT_VAR, EFI_VAR_GUID
+    );
+    let data = fs::read(path).ok()?;
+    // First 4 bytes are EFI variable attributes, then 2 bytes LE u16
+    if data.len() < 6 {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[4], data[5]]))
 }
 
 /// Read the last boot selection from the EFI variable.

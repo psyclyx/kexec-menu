@@ -38,6 +38,10 @@ OPTIONS:
   --auto-default   Boot the default entry without showing the menu
   -h, --help       Show this help
 
+ENVIRONMENT:
+  KEXEC_MENU_TIMEOUT          Autoboot timeout in seconds (0=fast, 65535=none)
+  KEXEC_MENU_TIMEOUT_DEFAULT  Build-time default timeout (default: 5)
+
 COMPILE-TIME FEATURES:");
     #[cfg(feature = "full-fs-view")]
     eprint!("\n  full-fs-view     Browse mounted filesystems (keybind: f)");
@@ -89,11 +93,14 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
         return run_auto_default(dry_run, &trees, default.as_ref());
     }
 
+    // Resolve autoboot timeout
+    let timeout = resolve_timeout();
+
     // Enter TUI — multiplex stdin with evdev (gpio-keys, volume buttons)
     let stdin = io::stdin();
     let stdout = io::stdout();
     let input = InputMux::new(stdin.lock().as_raw_fd(), evdev::EvdevReader::open());
-    let result = run_tui(input, stdout.lock(), &mut sources, &mut trees, default.as_ref());
+    let result = run_tui(input, stdout.lock(), &mut sources, &mut trees, default.as_ref(), timeout);
 
     match result {
         Ok(TuiResult::Quit) => {
@@ -257,12 +264,33 @@ enum SideScreen {
     },
 }
 
+/// Resolve autoboot timeout from config layers (EFI var > env > build-time default).
+/// Returns None for "no timeout" (infinite wait), Some(secs) otherwise.
+fn resolve_timeout() -> Option<u16> {
+    // EFI variable takes priority
+    if let Some(t) = kexec::read_efi_timeout() {
+        return if t == u16::MAX { None } else { Some(t) };
+    }
+    // Runtime environment variable
+    if let Ok(v) = std::env::var("KEXEC_MENU_TIMEOUT") {
+        if let Ok(t) = v.parse::<u16>() {
+            return if t == u16::MAX { None } else { Some(t) };
+        }
+    }
+    // Build-time default
+    let default: u16 = option_env!("KEXEC_MENU_TIMEOUT_DEFAULT")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    if default == u16::MAX { None } else { Some(default) }
+}
+
 fn run_tui(
-    mut input: impl Read,
+    mut input: InputMux,
     mut output: impl Write,
     sources: &mut Vec<Source>,
     trees: &mut Vec<(String, Vec<TreeNode>)>,
     default: Option<&BootSelection>,
+    timeout: Option<u16>,
 ) -> io::Result<TuiResult> {
     let _raw = RawMode::enter()?;
     tui::hide_cursor(&mut output)?;
@@ -274,6 +302,35 @@ fn run_tui(
 
     let mut view = tui::TreeView::build(sources, trees, default);
     let mut side: Option<SideScreen> = None;
+
+    // Autoboot countdown: if timeout is set and a default entry exists,
+    // show the menu with a countdown. Any key cancels to normal mode.
+    if let Some(secs) = timeout {
+        if default.is_some() && !default_is_locked(&view) {
+            let poll_ms = if secs == 0 { 100 } else { 1000 };
+            let iterations = if secs == 0 { 1u16 } else { secs };
+
+            for remaining in (0..=iterations).rev() {
+                tui::render_tree_view(&mut output, &view)?;
+                let display_secs = if secs == 0 { 0 } else { remaining };
+                tui::render_countdown(&mut output, display_secs)?;
+
+                match input.poll(poll_ms) {
+                    Ok(true) => break, // key pressed, cancel countdown
+                    Ok(false) if remaining == 0 => {
+                        // Timeout expired — boot default
+                        cleanup(&mut output)?;
+                        if let Some(result) = boot_default(&view) {
+                            return Ok(result);
+                        }
+                        break; // fallback to normal loop if default can't be found
+                    }
+                    Ok(false) => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
 
     loop {
         // Render
@@ -442,6 +499,47 @@ fn run_tui(
     }
 }
 
+/// Check if the default entry's source is locked (encrypted, not yet unlocked).
+fn default_is_locked(view: &tui::TreeView) -> bool {
+    // Find the default entry node, then check its source
+    for node in &view.nodes {
+        if node.is_default {
+            if let tui::NodeKind::Entry { source_idx, .. } = &node.kind {
+                // Check the source node for this index
+                for src_node in &view.nodes {
+                    if let tui::NodeKind::Source { idx, state, .. } = &src_node.kind {
+                        if idx == source_idx {
+                            return matches!(state, tui::NodeSourceState::Encrypted);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Extract the boot result for the default entry from the tree view.
+fn boot_default(view: &tui::TreeView) -> Option<TuiResult> {
+    for (i, node) in view.nodes.iter().enumerate() {
+        if node.is_default {
+            if let tui::NodeKind::Entry { entry, source_idx } = &node.kind {
+                // Walk backwards to find the leaf path
+                for j in (0..=i).rev() {
+                    if let tui::NodeKind::Leaf { path, .. } = &view.nodes[j].kind {
+                        return Some(TuiResult::Boot {
+                            leaf_path: path.clone(),
+                            entry: entry.clone(),
+                            source_idx: *source_idx,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Find the leaf path for the entry at the current cursor position in the tree view.
 fn find_entry_leaf_path(view: &tui::TreeView) -> Option<PathBuf> {
     for i in (0..=view.cursor).rev() {
@@ -529,6 +627,45 @@ impl InputMux {
             buf: [0; 3],
             buf_len: 0,
             buf_pos: 0,
+        }
+    }
+}
+
+impl InputMux {
+    /// Poll for input readiness with a timeout.
+    /// Returns Ok(true) if input is ready, Ok(false) on timeout.
+    fn poll(&self, timeout_ms: i32) -> io::Result<bool> {
+        let mut pollfds = Vec::with_capacity(1 + self.evdev.as_ref().map_or(0, |e| e.fds().len()));
+        pollfds.push(libc::pollfd {
+            fd: self.stdin_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        if let Some(evdev) = &self.evdev {
+            for &fd in evdev.fds() {
+                pollfds.push(libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
+        }
+        loop {
+            let ret = unsafe {
+                libc::poll(
+                    pollfds.as_mut_ptr(),
+                    pollfds.len() as libc::nfds_t,
+                    timeout_ms,
+                )
+            };
+            if ret < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            return Ok(ret > 0);
         }
     }
 }
