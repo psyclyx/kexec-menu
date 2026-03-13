@@ -1,11 +1,6 @@
-# Generates an 80x80 PPM boot logo for kexec-menu.
+# Generates an 80x80 PPM boot logo by calling scripts/mklogo.sh.
 #
-# The logo is a right-pointing chevron (">") — simple, clean, and suggestive
-# of "boot" / "go". Colors default to gruvbox-dark tones but can be overridden
-# with any base16 palette via the `colors` attrset.
-#
-# The output is a single PPM (P3) file with ≤4 colors, suitable for the
-# kernel's CLUT224 logo system (drivers/video/logo/).
+# This is a thin Nix wrapper — all build logic lives in mklogo.sh.
 #
 # Args:
 #   colors — attrset with base16 color keys as "R G B" strings (0-255):
@@ -13,7 +8,6 @@
 #            Only these three are used. Defaults to gruvbox-dark.
 {
   runCommand,
-  gawk,
   colors ? {},
 }:
 
@@ -27,56 +21,10 @@ let
   c = defaults // colors;
 in
 
-runCommand "kexec-menu-logo.ppm" {
-  nativeBuildInputs = [ gawk ];
-} ''
-  gawk -v bg="${c.base00}" -v fg="${c.base05}" -v accent="${c.base0D}" '
-    function dist_to_seg(px, py, x1, y1, x2, y2,    dx, dy, len2, t, cx, cy) {
-      dx = x2 - x1
-      dy = y2 - y1
-      len2 = dx*dx + dy*dy
-      if (len2 == 0) return sqrt((px-x1)^2 + (py-y1)^2)
-      t = ((px-x1)*dx + (py-y1)*dy) / len2
-      if (t < 0) t = 0
-      if (t > 1) t = 1
-      cx = x1 + t*dx
-      cy = y1 + t*dy
-      return sqrt((px-cx)^2 + (py-cy)^2)
-    }
+runCommand "kexec-menu-logo.ppm" {} ''
+  export LOGO_BG="${c.base00}"
+  export LOGO_FG="${c.base05}"
+  export LOGO_ACCENT="${c.base0D}"
 
-    BEGIN {
-      W = 80; H = 80
-
-      split(bg, bgc, " ")
-      split(fg, fgc, " ")
-      split(accent, acc, " ")
-
-      # Chevron geometry: right-pointing ">"
-      # Upper arm: top-left to tip
-      ax1 = 20; ay1 = 15; ax2 = 60; ay2 = 40
-      # Lower arm: bottom-left to tip
-      bx1 = 20; by1 = 65; bx2 = 60; by2 = 40
-
-      ht = 3.5   # half-thickness of chevron arms
-      aa = 1.5   # anti-alias / accent band width
-
-      printf "P3\n%d %d\n255\n", W, H
-
-      for (y = 0; y < H; y++) {
-        for (x = 0; x < W; x++) {
-          d1 = dist_to_seg(x, y, ax1, ay1, ax2, ay2)
-          d2 = dist_to_seg(x, y, bx1, by1, bx2, by2)
-          d = (d1 < d2) ? d1 : d2
-
-          if (d <= ht) {
-            printf "%d %d %d\n", fgc[1], fgc[2], fgc[3]
-          } else if (d <= ht + aa) {
-            printf "%d %d %d\n", acc[1], acc[2], acc[3]
-          } else {
-            printf "%d %d %d\n", bgc[1], bgc[2], bgc[3]
-          }
-        }
-      }
-    }
-  ' /dev/null > "$out"
+  sh ${../../scripts/mklogo.sh} > "$out"
 ''
