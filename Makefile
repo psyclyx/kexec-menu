@@ -17,6 +17,7 @@
 #
 # Component builds (from source — downloads automatically):
 #   make busybox ARCH=x86_64           # build static busybox from source
+#   make bcachefs-tools ARCH=x86_64    # build static bcachefs binary from source
 #
 # UKI build targets (see README for full instructions):
 #   make logo                          # generate boot logo PPM
@@ -64,7 +65,8 @@ CRYPTSETUP ?=
 BCACHEFS   ?=
 
 # Component build versions (for building from source)
-BUSYBOX_VERSION ?= 1.36.1
+BUSYBOX_VERSION   ?= 1.36.1
+BCACHEFS_VERSION  ?= v1.11.0
 
 # Kernel build inputs
 KERNEL_SRC ?=
@@ -87,7 +89,7 @@ RUST_SOURCES = $(shell find crates -name '*.rs' -o -name 'Cargo.toml')
 
 # ─── Binary targets ──────────────────────────────────────────────────
 
-.PHONY: x86_64 aarch64 all test clean logo initrd kernel uki busybox
+.PHONY: x86_64 aarch64 all test clean logo initrd kernel uki busybox bcachefs-tools
 
 x86_64: $(X86_64_BIN)
 aarch64: $(AARCH64_BIN)
@@ -108,6 +110,11 @@ busybox: $(BUILD_DIR)/busybox
 
 $(BUILD_DIR)/busybox: scripts/mkbusybox.sh uki/initrd/busybox.config | $(BUILD_DIR)
 	ARCH=$(ARCH) BUSYBOX_VERSION=$(BUSYBOX_VERSION) BUILD_DIR=$(BUILD_DIR) OUTPUT=$@ ./scripts/mkbusybox.sh
+
+bcachefs-tools: $(BUILD_DIR)/bcachefs
+
+$(BUILD_DIR)/bcachefs: scripts/mkbcachefs.sh | $(BUILD_DIR)
+	ARCH=$(ARCH) BCACHEFS_VERSION=$(BCACHEFS_VERSION) BUILD_DIR=$(BUILD_DIR) OUTPUT=$@ ./scripts/mkbcachefs.sh
 
 # ─── UKI build targets ───────────────────────────────────────────────
 
