@@ -1,8 +1,9 @@
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::process;
 
+use kexec_menu_core::evdev;
 use kexec_menu_core::kexec;
 use kexec_menu_core::mount;
 use kexec_menu_core::select;
@@ -61,10 +62,11 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
         return run_auto_default(dry_run, &trees, default.as_ref());
     }
 
-    // Enter TUI
+    // Enter TUI — multiplex stdin with evdev (gpio-keys, volume buttons)
     let stdin = io::stdin();
     let stdout = io::stdout();
-    let result = run_tui(stdin.lock(), stdout.lock(), &mut sources, &mut trees, default.as_ref());
+    let input = InputMux::new(stdin.lock().as_raw_fd(), evdev::EvdevReader::open());
+    let result = run_tui(input, stdout.lock(), &mut sources, &mut trees, default.as_ref());
 
     match result {
         Ok(TuiResult::Quit) => {
@@ -478,6 +480,144 @@ fn find_leaf_in_nodes<'a>(
         }
     }
     None
+}
+
+// --- Input multiplexer: stdin + evdev ---
+
+/// Multiplexes terminal stdin with evdev input devices.
+/// Evdev events are translated to byte sequences that tui::read_key() understands.
+struct InputMux {
+    stdin_fd: RawFd,
+    evdev: Option<evdev::EvdevReader>,
+    buf: [u8; 3],
+    buf_len: usize,
+    buf_pos: usize,
+}
+
+impl InputMux {
+    fn new(stdin_fd: RawFd, evdev: Option<evdev::EvdevReader>) -> Self {
+        Self {
+            stdin_fd,
+            evdev,
+            buf: [0; 3],
+            buf_len: 0,
+            buf_pos: 0,
+        }
+    }
+}
+
+impl Read for InputMux {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        // Drain internal buffer first (from multi-byte evdev translations)
+        if self.buf_pos < self.buf_len {
+            let avail = self.buf_len - self.buf_pos;
+            let n = out.len().min(avail);
+            out[..n].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + n]);
+            self.buf_pos += n;
+            if self.buf_pos >= self.buf_len {
+                self.buf_len = 0;
+                self.buf_pos = 0;
+            }
+            return Ok(n);
+        }
+
+        // No evdev devices — just read stdin
+        let Some(evdev) = &self.evdev else {
+            let n = unsafe {
+                libc::read(self.stdin_fd, out.as_mut_ptr() as *mut libc::c_void, out.len())
+            };
+            return if n < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(n as usize)
+            };
+        };
+
+        // Poll stdin + all evdev fds
+        let ev_fds = evdev.fds();
+        let nfds = 1 + ev_fds.len();
+        let mut pollfds = Vec::with_capacity(nfds);
+        pollfds.push(libc::pollfd {
+            fd: self.stdin_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        for &fd in ev_fds {
+            pollfds.push(libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
+
+        loop {
+            let ret = unsafe {
+                libc::poll(pollfds.as_mut_ptr(), nfds as libc::nfds_t, -1)
+            };
+            if ret < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+
+            // stdin ready — pass through directly
+            if pollfds[0].revents & libc::POLLIN != 0 {
+                let n = unsafe {
+                    libc::read(
+                        self.stdin_fd,
+                        out.as_mut_ptr() as *mut libc::c_void,
+                        out.len(),
+                    )
+                };
+                return if n < 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(n as usize)
+                };
+            }
+
+            // evdev ready — translate to terminal byte sequence
+            for pfd in &pollfds[1..] {
+                if pfd.revents & libc::POLLIN != 0 {
+                    if let Some(key) = evdev.try_read_key(pfd.fd) {
+                        let (bytes, len) = evdev_key_to_bytes(&key);
+                        if len == 0 {
+                            continue;
+                        }
+                        let n = out.len().min(len);
+                        out[..n].copy_from_slice(&bytes[..n]);
+                        if n < len {
+                            // Buffer remaining bytes for next read() call
+                            let rem = len - n;
+                            self.buf[..rem].copy_from_slice(&bytes[n..len]);
+                            self.buf_len = rem;
+                            self.buf_pos = 0;
+                        }
+                        return Ok(n);
+                    }
+                }
+            }
+            // Unmapped evdev event — poll again
+        }
+    }
+}
+
+/// Translate a Key from evdev into the byte sequence that tui::read_key() expects.
+fn evdev_key_to_bytes(key: &tui::Key) -> ([u8; 3], usize) {
+    match key {
+        tui::Key::Up => ([0x1b, b'[', b'A'], 3),
+        tui::Key::Down => ([0x1b, b'[', b'B'], 3),
+        tui::Key::Right => ([0x1b, b'[', b'C'], 3),
+        tui::Key::Left => ([0x1b, b'[', b'D'], 3),
+        tui::Key::Enter => ([b'\r', 0, 0], 1),
+        tui::Key::Backspace => ([0x7f, 0, 0], 1),
+        tui::Key::Char(c) => ([*c as u8, 0, 0], 1),
+        // Escape produces a bare 0x1b which would cause read_key to block
+        // waiting for a sequence — skip it. Use 'q' or Left to go back.
+        _ => ([0, 0, 0], 0),
+    }
 }
 
 // --- Terminal raw mode ---

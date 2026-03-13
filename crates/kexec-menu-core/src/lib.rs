@@ -1,3 +1,4 @@
+pub mod evdev;
 pub mod kexec;
 pub mod mount;
 pub mod select;
