@@ -94,10 +94,11 @@ Build a locked-down binary with `--no-default-features`:
 
 ## Testing
 
-    cargo test --workspace      # unit tests (154 tests)
+    cargo test --workspace      # unit tests (174 tests)
     make test                   # unit tests via Makefile
 
-QEMU integration tests (boots a VM, mounts ext4/btrfs/LUKS, runs the menu):
+QEMU integration tests (boots a VM, mounts ext4/btrfs/XFS/F2FS/LUKS/multi-device
+btrfs RAID1, runs the menu, validates disk-whitelist filtering):
 
     $(nix-build -A tests.qemu)  # build deps and run
 

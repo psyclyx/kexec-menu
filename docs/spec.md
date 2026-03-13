@@ -102,12 +102,15 @@ Encrypted or errored sources shown but not automounted.
 
 Supported:
 - ext4, btrfs, XFS, F2FS, bcachefs (unencrypted): mount directly
+- btrfs multi-device (RAID1, etc.): detected and grouped as a single source
 - bcachefs native encryption: prompt on selection
 - LUKS: prompt on selection
 
 Press `r` to rescan block devices and refresh the source list.
 
-Multiple filesystems appear as separate top-level sources. Boot trees are not merged.
+Multiple filesystems appear as separate top-level sources. Boot trees are not
+merged. Multi-device filesystems (e.g. btrfs RAID1) are grouped into a single
+source rather than appearing as separate devices.
 
 **Key handoff to stage 1:** pass decrypted key as an additional initrd segment
 to kexec. Stage 1 finds key at `/run/bootmenu-keys/<uuid>`. Never written to disk.
@@ -140,7 +143,9 @@ Compile-time feature flags (`full-fs-view`, `rescue-shell`, `disk-whitelist`;
 all default-on) control security-sensitive functionality. Build with
 `--no-default-features` for locked-down deployments.
 
-Buildable without Nix via Makefile. Nix is the primary build path.
+Build pipeline: shell scripts (`scripts/mkkernel.sh`, `scripts/mkinitrd.sh`,
+`scripts/mklogo.sh`) do the real work. Nix derivations and Makefile targets
+both call the same scripts — one build path, two entry points.
 
 ---
 
