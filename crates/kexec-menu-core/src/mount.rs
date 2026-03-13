@@ -3,10 +3,13 @@
 // Reads sysfs and probes superblocks to discover mountable sources.
 // Uses libc for mount syscalls. All mounts are read-only.
 
+#[allow(unused_imports)]
 use std::ffi::CString;
 use std::fs;
+#[allow(unused_imports)]
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+#[allow(unused_imports)]
 use std::process::{Command, Stdio};
 
 use crate::types::{Error, Result, Source, SourceState};
@@ -15,107 +18,155 @@ use crate::types::{Error, Result, Source, SourceState};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FsType {
+    #[cfg(feature = "fs-ext4")]
     Ext4,
+    #[cfg(feature = "fs-btrfs")]
     Btrfs,
+    #[cfg(feature = "fs-bcachefs")]
     Bcachefs,
+    #[cfg(feature = "fs-xfs")]
     Xfs,
+    #[cfg(feature = "fs-f2fs")]
     F2fs,
+    #[cfg(feature = "fs-luks")]
     Luks,
 }
 
 impl FsType {
+    #[allow(unreachable_patterns)]
     pub fn as_str(&self) -> &'static str {
-        match self {
+        match *self {
+            #[cfg(feature = "fs-ext4")]
             FsType::Ext4 => "ext4",
+            #[cfg(feature = "fs-btrfs")]
             FsType::Btrfs => "btrfs",
+            #[cfg(feature = "fs-bcachefs")]
             FsType::Bcachefs => "bcachefs",
+            #[cfg(feature = "fs-xfs")]
             FsType::Xfs => "xfs",
+            #[cfg(feature = "fs-f2fs")]
             FsType::F2fs => "f2fs",
+            #[cfg(feature = "fs-luks")]
             FsType::Luks => "crypto_LUKS",
+            _ => unreachable!(),
         }
     }
 
     /// Kernel filesystem type string for mount(2).
     /// Returns None for LUKS (not directly mountable).
+    #[allow(unreachable_patterns)]
     pub fn mount_type(&self) -> Option<&'static str> {
-        match self {
+        match *self {
+            #[cfg(feature = "fs-ext4")]
             FsType::Ext4 => Some("ext4"),
+            #[cfg(feature = "fs-btrfs")]
             FsType::Btrfs => Some("btrfs"),
+            #[cfg(feature = "fs-bcachefs")]
             FsType::Bcachefs => Some("bcachefs"),
+            #[cfg(feature = "fs-xfs")]
             FsType::Xfs => Some("xfs"),
+            #[cfg(feature = "fs-f2fs")]
             FsType::F2fs => Some("f2fs"),
+            #[cfg(feature = "fs-luks")]
             FsType::Luks => None,
+            _ => unreachable!(),
         }
     }
 }
 
 // Superblock magic bytes and their offsets.
-// ext4: 0x38 (56) bytes into superblock at offset 1024, magic 0xEF53
-// btrfs: "_BHRfS_M" at offset 0x10040
-// bcachefs: 0xc68573f6 at offset 0x1008
-// LUKS: "LUKS\xba\xbe" at offset 0
 
+#[cfg(feature = "fs-ext4")]
 const EXT_SUPER_OFFSET: u64 = 1024 + 0x38;
+#[cfg(feature = "fs-ext4")]
 const EXT_MAGIC: [u8; 2] = [0x53, 0xEF]; // little-endian 0xEF53
 
+#[cfg(feature = "fs-btrfs")]
 const BTRFS_MAGIC_OFFSET: u64 = 0x10040;
+#[cfg(feature = "fs-btrfs")]
 const BTRFS_MAGIC: &[u8] = b"_BHRfS_M";
 
+#[cfg(feature = "fs-bcachefs")]
 const BCACHEFS_SB_START: u64 = 0x1000; // sector 8
+#[cfg(feature = "fs-bcachefs")]
 const BCACHEFS_SUPER_OFFSET: u64 = BCACHEFS_SB_START + 0x18; // magic field
+#[cfg(feature = "fs-bcachefs")]
 const BCACHEFS_MAGIC: [u8; 4] = [0xf6, 0x73, 0x85, 0xc6]; // little-endian 0xc68573f6
 
-// XFS: magic "XFSB" (0x58465342) at offset 0, label at offset 108 (12 bytes)
+#[cfg(feature = "fs-xfs")]
 const XFS_MAGIC: &[u8] = b"XFSB";
 
-// F2FS: magic 0xF2F52010 at offset 1024
+#[cfg(feature = "fs-f2fs")]
 const F2FS_SUPER_OFFSET: u64 = 1024;
+#[cfg(feature = "fs-f2fs")]
 const F2FS_MAGIC: [u8; 4] = [0x10, 0x20, 0xF5, 0xF2]; // little-endian 0xF2F52010
 
+#[cfg(feature = "fs-luks")]
 const LUKS_MAGIC: &[u8] = b"LUKS\xba\xbe";
 
 /// Linux ENOKEY errno — returned when bcachefs mount fails due to missing encryption key.
+#[cfg(feature = "fs-bcachefs")]
 const ENOKEY: i32 = 126;
 
 /// Probe a block device to detect its filesystem type.
 pub fn probe_fs_type(dev: &Path) -> Result<Option<FsType>> {
     let mut f = fs::File::open(dev)?;
+    let _ = &mut f; // suppress unused warning when no fs features enabled
     let mut buf = [0u8; 8];
+    let _ = &mut buf;
 
     // LUKS: magic at offset 0
-    f.seek(SeekFrom::Start(0))?;
-    if f.read_exact(&mut buf[..6]).is_ok() && buf[..6] == *LUKS_MAGIC {
-        return Ok(Some(FsType::Luks));
+    #[cfg(feature = "fs-luks")]
+    {
+        f.seek(SeekFrom::Start(0))?;
+        if f.read_exact(&mut buf[..6]).is_ok() && buf[..6] == *LUKS_MAGIC {
+            return Ok(Some(FsType::Luks));
+        }
     }
 
     // XFS: magic "XFSB" at offset 0
-    f.seek(SeekFrom::Start(0))?;
-    if f.read_exact(&mut buf[..4]).is_ok() && buf[..4] == *XFS_MAGIC {
-        return Ok(Some(FsType::Xfs));
+    #[cfg(feature = "fs-xfs")]
+    {
+        f.seek(SeekFrom::Start(0))?;
+        if f.read_exact(&mut buf[..4]).is_ok() && buf[..4] == *XFS_MAGIC {
+            return Ok(Some(FsType::Xfs));
+        }
     }
 
     // ext4: magic at offset 1024+0x38
-    f.seek(SeekFrom::Start(EXT_SUPER_OFFSET))?;
-    if f.read_exact(&mut buf[..2]).is_ok() && buf[..2] == EXT_MAGIC {
-        return Ok(Some(FsType::Ext4));
+    #[cfg(feature = "fs-ext4")]
+    {
+        f.seek(SeekFrom::Start(EXT_SUPER_OFFSET))?;
+        if f.read_exact(&mut buf[..2]).is_ok() && buf[..2] == EXT_MAGIC {
+            return Ok(Some(FsType::Ext4));
+        }
     }
 
     // F2FS: magic at offset 1024
-    f.seek(SeekFrom::Start(F2FS_SUPER_OFFSET))?;
-    if f.read_exact(&mut buf[..4]).is_ok() && buf[..4] == F2FS_MAGIC {
-        return Ok(Some(FsType::F2fs));
+    #[cfg(feature = "fs-f2fs")]
+    {
+        f.seek(SeekFrom::Start(F2FS_SUPER_OFFSET))?;
+        if f.read_exact(&mut buf[..4]).is_ok() && buf[..4] == F2FS_MAGIC {
+            return Ok(Some(FsType::F2fs));
+        }
     }
 
     // bcachefs: magic at offset 0x1008
-    f.seek(SeekFrom::Start(BCACHEFS_SUPER_OFFSET))?;
-    if f.read_exact(&mut buf[..4]).is_ok() && buf[..4] == BCACHEFS_MAGIC {
-        return Ok(Some(FsType::Bcachefs));
+    #[cfg(feature = "fs-bcachefs")]
+    {
+        f.seek(SeekFrom::Start(BCACHEFS_SUPER_OFFSET))?;
+        if f.read_exact(&mut buf[..4]).is_ok() && buf[..4] == BCACHEFS_MAGIC {
+            return Ok(Some(FsType::Bcachefs));
+        }
     }
 
     // btrfs: magic at offset 0x10040
-    f.seek(SeekFrom::Start(BTRFS_MAGIC_OFFSET))?;
-    if f.read_exact(&mut buf).is_ok() && buf == *BTRFS_MAGIC {
-        return Ok(Some(FsType::Btrfs));
+    #[cfg(feature = "fs-btrfs")]
+    {
+        f.seek(SeekFrom::Start(BTRFS_MAGIC_OFFSET))?;
+        if f.read_exact(&mut buf).is_ok() && buf == *BTRFS_MAGIC {
+            return Ok(Some(FsType::Btrfs));
+        }
     }
 
     Ok(None)
@@ -124,18 +175,27 @@ pub fn probe_fs_type(dev: &Path) -> Result<Option<FsType>> {
 // --- Label reading from superblock ---
 
 /// Read a filesystem label from the superblock.
+#[allow(unreachable_patterns, unused_mut, unused_variables)]
 pub fn read_fs_label(dev: &Path, fstype: FsType) -> Result<Option<String>> {
     let mut f = fs::File::open(dev)?;
     match fstype {
+        #[cfg(feature = "fs-ext4")]
         FsType::Ext4 => read_ext4_label(&mut f),
+        #[cfg(feature = "fs-btrfs")]
         FsType::Btrfs => read_btrfs_label(&mut f),
+        #[cfg(feature = "fs-bcachefs")]
         FsType::Bcachefs => read_bcachefs_label(&mut f),
+        #[cfg(feature = "fs-xfs")]
         FsType::Xfs => read_xfs_label(&mut f),
+        #[cfg(feature = "fs-f2fs")]
         FsType::F2fs => read_f2fs_label(&mut f),
+        #[cfg(feature = "fs-luks")]
         FsType::Luks => Ok(None), // LUKS has no fs label at this layer
+        _ => unreachable!(),
     }
 }
 
+#[cfg(feature = "fs-ext4")]
 fn read_ext4_label(f: &mut fs::File) -> Result<Option<String>> {
     // ext4 volume name: 16 bytes at superblock offset 1024 + 0x78
     f.seek(SeekFrom::Start(1024 + 0x78))?;
@@ -144,6 +204,7 @@ fn read_ext4_label(f: &mut fs::File) -> Result<Option<String>> {
     Ok(label_from_bytes(&buf))
 }
 
+#[cfg(feature = "fs-btrfs")]
 fn read_btrfs_label(f: &mut fs::File) -> Result<Option<String>> {
     // btrfs label: 256 bytes at superblock offset 0x1012b
     f.seek(SeekFrom::Start(0x1012b))?;
@@ -152,6 +213,7 @@ fn read_btrfs_label(f: &mut fs::File) -> Result<Option<String>> {
     Ok(label_from_bytes(&buf))
 }
 
+#[cfg(feature = "fs-bcachefs")]
 fn read_bcachefs_label(f: &mut fs::File) -> Result<Option<String>> {
     // bcachefs label: 32 bytes at sb_start + 0x48
     f.seek(SeekFrom::Start(BCACHEFS_SB_START + 0x48))?;
@@ -160,6 +222,7 @@ fn read_bcachefs_label(f: &mut fs::File) -> Result<Option<String>> {
     Ok(label_from_bytes(&buf))
 }
 
+#[cfg(feature = "fs-xfs")]
 fn read_xfs_label(f: &mut fs::File) -> Result<Option<String>> {
     // XFS volume label: 12 bytes at offset 108 in the superblock
     f.seek(SeekFrom::Start(108))?;
@@ -168,6 +231,7 @@ fn read_xfs_label(f: &mut fs::File) -> Result<Option<String>> {
     Ok(label_from_bytes(&buf))
 }
 
+#[cfg(feature = "fs-f2fs")]
 fn read_f2fs_label(f: &mut fs::File) -> Result<Option<String>> {
     // F2FS volume label: UTF-16LE, 512 bytes at superblock offset 1024 + 0x1A0 (416)
     f.seek(SeekFrom::Start(1024 + 0x1A0))?;
@@ -427,8 +491,34 @@ pub fn discover_sources() -> Result<Vec<Source>> {
 
         let label = best_label(dev, Some(fstype));
 
-        match fstype {
-            FsType::Luks => {
+        #[cfg(feature = "fs-luks")]
+        if matches!(fstype, FsType::Luks) {
+            sources.push(Source {
+                label,
+                device: dev.path.clone(),
+                state: SourceState::Encrypted,
+                mount_point: None,
+                passphrase: None,
+            });
+            continue;
+        }
+
+        // All non-LUKS filesystem types are directly mountable
+        match mount_ro(&dev.path, fstype) {
+            Ok(mp) => {
+                sources.push(Source {
+                    label,
+                    device: dev.path.clone(),
+                    state: SourceState::Mounted,
+                    mount_point: Some(mp),
+                    passphrase: None,
+                });
+            }
+            #[cfg(feature = "fs-bcachefs")]
+            Err(Error::Io(ref e))
+                if fstype == FsType::Bcachefs
+                    && e.raw_os_error() == Some(ENOKEY) =>
+            {
                 sources.push(Source {
                     label,
                     device: dev.path.clone(),
@@ -437,40 +527,14 @@ pub fn discover_sources() -> Result<Vec<Source>> {
                     passphrase: None,
                 });
             }
-            FsType::Ext4 | FsType::Btrfs | FsType::Bcachefs
-            | FsType::Xfs | FsType::F2fs => {
-                match mount_ro(&dev.path, fstype) {
-                    Ok(mp) => {
-                        sources.push(Source {
-                            label,
-                            device: dev.path.clone(),
-                            state: SourceState::Mounted,
-                            mount_point: Some(mp),
-                            passphrase: None,
-                        });
-                    }
-                    Err(Error::Io(ref e))
-                        if fstype == FsType::Bcachefs
-                            && e.raw_os_error() == Some(ENOKEY) =>
-                    {
-                        sources.push(Source {
-                            label,
-                            device: dev.path.clone(),
-                            state: SourceState::Encrypted,
-                            mount_point: None,
-                            passphrase: None,
-                        });
-                    }
-                    Err(e) => {
-                        sources.push(Source {
-                            label,
-                            device: dev.path.clone(),
-                            state: SourceState::Error(format!("{e}")),
-                            mount_point: None,
-                            passphrase: None,
-                        });
-                    }
-                }
+            Err(e) => {
+                sources.push(Source {
+                    label,
+                    device: dev.path.clone(),
+                    state: SourceState::Error(format!("{e}")),
+                    mount_point: None,
+                    passphrase: None,
+                });
             }
         }
     }
@@ -484,16 +548,19 @@ pub fn discover_sources() -> Result<Vec<Source>> {
 ///
 /// For LUKS: opens the container via cryptsetup, probes inner fs, mounts.
 /// For bcachefs: unlocks via bcachefs tool, then mounts directly.
+#[allow(unreachable_patterns, unused_variables)]
 pub fn unlock_and_mount(dev: &Path, passphrase: &str) -> Result<PathBuf> {
     let fstype = probe_fs_type(dev)?
         .ok_or_else(|| Error::Parse("unknown filesystem".into()))?;
     match fstype {
+        #[cfg(feature = "fs-luks")]
         FsType::Luks => {
             let mapped = unlock_luks(dev, passphrase)?;
             let inner_fs = probe_fs_type(&mapped)?
                 .ok_or_else(|| Error::Parse("no filesystem inside LUKS container".into()))?;
             mount_ro(&mapped, inner_fs)
         }
+        #[cfg(feature = "fs-bcachefs")]
         FsType::Bcachefs => {
             unlock_bcachefs(dev, passphrase)?;
             mount_ro(dev, FsType::Bcachefs)
@@ -503,6 +570,7 @@ pub fn unlock_and_mount(dev: &Path, passphrase: &str) -> Result<PathBuf> {
 }
 
 /// Open a LUKS container via cryptsetup. Returns the mapped device path.
+#[cfg(feature = "fs-luks")]
 fn unlock_luks(dev: &Path, passphrase: &str) -> Result<PathBuf> {
     let dev_name = dev.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -532,6 +600,7 @@ fn unlock_luks(dev: &Path, passphrase: &str) -> Result<PathBuf> {
 }
 
 /// Unlock a bcachefs filesystem by adding the key to the kernel keyring.
+#[cfg(feature = "fs-bcachefs")]
 fn unlock_bcachefs(dev: &Path, passphrase: &str) -> Result<()> {
     let mut child = Command::new("bcachefs")
         .arg("unlock")
@@ -595,32 +664,51 @@ mod tests {
 
     // --- FsType tests ---
 
+    #[cfg(feature = "fs-ext4")]
     #[test]
-    fn fstype_as_str() {
+    fn fstype_ext4_as_str() {
         assert_eq!(FsType::Ext4.as_str(), "ext4");
-        assert_eq!(FsType::Btrfs.as_str(), "btrfs");
-        assert_eq!(FsType::Bcachefs.as_str(), "bcachefs");
-        assert_eq!(FsType::Xfs.as_str(), "xfs");
-        assert_eq!(FsType::F2fs.as_str(), "f2fs");
-        assert_eq!(FsType::Luks.as_str(), "crypto_LUKS");
+        assert_eq!(FsType::Ext4.mount_type(), Some("ext4"));
     }
 
+    #[cfg(feature = "fs-btrfs")]
     #[test]
-    fn fstype_mount_type() {
-        assert_eq!(FsType::Ext4.mount_type(), Some("ext4"));
+    fn fstype_btrfs_as_str() {
+        assert_eq!(FsType::Btrfs.as_str(), "btrfs");
         assert_eq!(FsType::Btrfs.mount_type(), Some("btrfs"));
+    }
+
+    #[cfg(feature = "fs-bcachefs")]
+    #[test]
+    fn fstype_bcachefs_as_str() {
+        assert_eq!(FsType::Bcachefs.as_str(), "bcachefs");
         assert_eq!(FsType::Bcachefs.mount_type(), Some("bcachefs"));
+    }
+
+    #[cfg(feature = "fs-xfs")]
+    #[test]
+    fn fstype_xfs_as_str() {
+        assert_eq!(FsType::Xfs.as_str(), "xfs");
         assert_eq!(FsType::Xfs.mount_type(), Some("xfs"));
+    }
+
+    #[cfg(feature = "fs-f2fs")]
+    #[test]
+    fn fstype_f2fs_as_str() {
+        assert_eq!(FsType::F2fs.as_str(), "f2fs");
         assert_eq!(FsType::F2fs.mount_type(), Some("f2fs"));
     }
 
+    #[cfg(feature = "fs-luks")]
     #[test]
-    fn fstype_luks_mount_returns_none() {
+    fn fstype_luks_as_str() {
+        assert_eq!(FsType::Luks.as_str(), "crypto_LUKS");
         assert_eq!(FsType::Luks.mount_type(), None);
     }
 
     // --- probe_fs_type tests with synthetic block devices ---
 
+    #[cfg(feature = "fs-ext4")]
     #[test]
     fn probe_ext4_magic() {
         let tmp = test_device(2048);
@@ -628,6 +716,7 @@ mod tests {
         assert_eq!(probe_fs_type(&tmp).unwrap(), Some(FsType::Ext4));
     }
 
+    #[cfg(feature = "fs-luks")]
     #[test]
     fn probe_luks_magic() {
         let tmp = test_device(2048);
@@ -635,6 +724,7 @@ mod tests {
         assert_eq!(probe_fs_type(&tmp).unwrap(), Some(FsType::Luks));
     }
 
+    #[cfg(feature = "fs-btrfs")]
     #[test]
     fn probe_btrfs_magic() {
         let tmp = test_device(0x10048);
@@ -642,6 +732,7 @@ mod tests {
         assert_eq!(probe_fs_type(&tmp).unwrap(), Some(FsType::Btrfs));
     }
 
+    #[cfg(feature = "fs-bcachefs")]
     #[test]
     fn probe_bcachefs_magic() {
         let tmp = test_device(0x101c); // must cover magic at 0x1018
@@ -649,6 +740,7 @@ mod tests {
         assert_eq!(probe_fs_type(&tmp).unwrap(), Some(FsType::Bcachefs));
     }
 
+    #[cfg(feature = "fs-xfs")]
     #[test]
     fn probe_xfs_magic() {
         let tmp = test_device(2048);
@@ -656,6 +748,7 @@ mod tests {
         assert_eq!(probe_fs_type(&tmp).unwrap(), Some(FsType::Xfs));
     }
 
+    #[cfg(feature = "fs-f2fs")]
     #[test]
     fn probe_f2fs_magic() {
         let tmp = test_device(2048);
@@ -669,6 +762,7 @@ mod tests {
         assert_eq!(probe_fs_type(&tmp).unwrap(), None);
     }
 
+    #[cfg(all(feature = "fs-luks", feature = "fs-ext4"))]
     #[test]
     fn probe_luks_priority_over_ext4() {
         // If both magics are present, LUKS (checked first) wins
@@ -696,6 +790,7 @@ mod tests {
         path
     }
 
+    #[allow(dead_code)]
     fn write_at(path: &Path, offset: u64, data: &[u8]) {
         use std::io::Write;
         let mut f = fs::OpenOptions::new().write(true).open(path).unwrap();

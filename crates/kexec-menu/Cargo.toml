@@ -5,10 +5,17 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["full-fs-view", "rescue-shell", "disk-whitelist"]
+default = ["full-fs-view", "rescue-shell", "disk-whitelist",
+           "fs-ext4", "fs-btrfs", "fs-bcachefs", "fs-xfs", "fs-f2fs", "fs-luks"]
 full-fs-view = ["kexec-menu-core/full-fs-view"]
 rescue-shell = ["kexec-menu-core/rescue-shell"]
 disk-whitelist = ["kexec-menu-core/disk-whitelist"]
+fs-ext4 = ["kexec-menu-core/fs-ext4"]
+fs-btrfs = ["kexec-menu-core/fs-btrfs"]
+fs-bcachefs = ["kexec-menu-core/fs-bcachefs"]
+fs-xfs = ["kexec-menu-core/fs-xfs"]
+fs-f2fs = ["kexec-menu-core/fs-f2fs"]
+fs-luks = ["kexec-menu-core/fs-luks"]
 
 [dependencies]
 kexec-menu-core = { path = "../kexec-menu-core", default-features = false }

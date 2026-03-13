@@ -5,10 +5,17 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["full-fs-view", "rescue-shell", "disk-whitelist"]
+default = ["full-fs-view", "rescue-shell", "disk-whitelist",
+           "fs-ext4", "fs-btrfs", "fs-bcachefs", "fs-xfs", "fs-f2fs", "fs-luks"]
 full-fs-view = []
 rescue-shell = []
 disk-whitelist = []
+fs-ext4 = []
+fs-btrfs = []
+fs-bcachefs = []
+fs-xfs = []
+fs-f2fs = []
+fs-luks = []
 
 [dependencies]
 libc = "0.2"
