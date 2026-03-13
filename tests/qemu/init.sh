@@ -24,6 +24,7 @@ if [ -d /lib/modules ]; then
         crc16 crc32c-cryptoapi mbcache jbd2 \
         ext4 \
         xor raid6_pq btrfs \
+        xfs f2fs \
         cryptd aesni-intel xts \
         dm-crypt; do
         if modprobe "$mod" 2>/dev/null; then

@@ -132,6 +132,10 @@ NEEDED_MODULES=(
     "crypto/xor.ko"
     "lib/raid6/raid6_pq.ko"
     "fs/btrfs/btrfs.ko"
+    # xfs
+    "fs/xfs/xfs.ko"
+    # f2fs
+    "fs/f2fs/f2fs.ko"
     # dm-crypt (for LUKS) and dependency chain
     "drivers/dax/dax.ko"
     "drivers/md/dm-mod.ko"

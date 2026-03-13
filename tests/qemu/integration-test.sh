@@ -28,7 +28,7 @@ done
 
 # --- Check tools ---
 missing=()
-for tool in qemu-system-x86_64 busybox mke2fs cpio; do
+for tool in qemu-system-x86_64 busybox mke2fs cpio mkfs.xfs mkfs.f2fs; do
     command -v "$tool" &>/dev/null || missing+=("$tool")
 done
 if [[ ${#missing[@]} -gt 0 ]]; then
@@ -64,19 +64,29 @@ if [[ ! -f "$BINARY" ]]; then
 fi
 
 # --- Create test disks (tmpfiles, cleaned up on exit) ---
+# Drive order must match init-test.sh expectations:
+#   vda=ext4, vdb=btrfs, vdc=luks, vdd=xfs, vde=f2fs, vdf+vdg=btrfs-raid1
 mkdir -p "$BUILD_DIR"
 DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.ext4")"
 BTRFS_DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.raw")"
 LUKS_DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.raw")"
+XFS_DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.raw")"
+F2FS_DISK="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.raw")"
 BTRFS_RAID1_A="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.raw")"
 BTRFS_RAID1_B="$(mktemp "$BUILD_DIR/test-disk.XXXXXX.raw")"
-cleanup_disks() { rm -f "$DISK" "$BTRFS_DISK" "$LUKS_DISK" "$BTRFS_RAID1_A" "$BTRFS_RAID1_B"; }
+cleanup_disks() { rm -f "$DISK" "$BTRFS_DISK" "$LUKS_DISK" "$XFS_DISK" "$F2FS_DISK" "$BTRFS_RAID1_A" "$BTRFS_RAID1_B"; }
 trap cleanup_disks EXIT
 "$REPO_ROOT/tests/qemu/create-test-disk.sh" "$DISK"
 # Empty 64MB disk — formatted as btrfs inside QEMU by init-test.sh
 truncate -s 64M "$BTRFS_DISK"
 # Empty 64MB disk — formatted as LUKS+ext4 inside QEMU by init-test.sh
 truncate -s 64M "$LUKS_DISK"
+# Pre-formatted XFS disk — populated inside QEMU by init-test.sh
+truncate -s 64M "$XFS_DISK"
+mkfs.xfs -f -L "test-xfs" "$XFS_DISK"
+# Pre-formatted F2FS disk — populated inside QEMU by init-test.sh
+truncate -s 64M "$F2FS_DISK"
+mkfs.f2fs -f -l "test-f2fs" "$F2FS_DISK"
 # Two 64MB disks for multi-device btrfs RAID1 test
 truncate -s 64M "$BTRFS_RAID1_A"
 truncate -s 64M "$BTRFS_RAID1_B"
@@ -126,6 +136,10 @@ NEEDED_MODULES=(
     "crypto/xor.ko"
     "lib/raid6/raid6_pq.ko"
     "fs/btrfs/btrfs.ko"
+    # xfs
+    "fs/xfs/xfs.ko"
+    # f2fs
+    "fs/f2fs/f2fs.ko"
     # dm-crypt (for LUKS) and dependency chain
     "drivers/dax/dax.ko"
     "drivers/md/dm-mod.ko"
@@ -178,10 +192,12 @@ timeout "$TIMEOUT_SECS" \
         -drive "file=$DISK,format=raw,if=virtio,readonly=on" \
         -drive "file=$BTRFS_DISK,format=raw,if=virtio" \
         -drive "file=$LUKS_DISK,format=raw,if=virtio" \
+        -drive "file=$XFS_DISK,format=raw,if=virtio" \
+        -drive "file=$F2FS_DISK,format=raw,if=virtio" \
         -drive "file=$BTRFS_RAID1_A,format=raw,if=virtio" \
         -drive "file=$BTRFS_RAID1_B,format=raw,if=virtio" \
         -cpu max \
-        -m 256M \
+        -m 512M \
         -nographic \
         -no-reboot \
     > "$OUTPUT_FILE" 2>&1 || true

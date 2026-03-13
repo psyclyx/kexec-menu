@@ -206,6 +206,14 @@ elif [ -b /dev/vdf ]; then
     echo "  skip: btrfs RAID1 setup (mkfs.btrfs not found)"
 fi
 
+# S3: five-disk count — track how many filesystem types were set up
+FS_COUNT=1  # ext4 on vda always present
+$BTRFS_SETUP && FS_COUNT=$((FS_COUNT + 1))
+$LUKS_SETUP && FS_COUNT=$((FS_COUNT + 1))
+$XFS_SETUP && FS_COUNT=$((FS_COUNT + 1))
+$F2FS_SETUP && FS_COUNT=$((FS_COUNT + 1))
+echo "S3: $FS_COUNT of 5 filesystem types ready"
+
 # Run kexec-menu in auto-default dry-run mode, capture stderr
 /bin/kexec-menu --dry-run --auto-default 2>/tmp/kexec-output
 STATUS=$?
@@ -286,6 +294,14 @@ if [ "$BTRFS_RAID_SETUP" = true ]; then
     else
         echo "WARN: btrfs RAID1 not clearly visible in output (may still work)"
     fi
+fi
+
+# S3: verify all 5 filesystem types were tested
+if [ "$FS_COUNT" -ge 5 ]; then
+    echo "OK: S3 five-disk test ($FS_COUNT/5 filesystem types)"
+else
+    echo "FAIL: S3 five-disk test (only $FS_COUNT/5 filesystem types ready)"
+    PASS=false
 fi
 
 echo ""

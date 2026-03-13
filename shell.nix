@@ -19,6 +19,9 @@ pkgs.mkShell {
 
     # Disk image tools (for QEMU tests)
     pkgs.e2fsprogs
+    pkgs.btrfs-progs
+    pkgs.xfsprogs
+    pkgs.f2fs-tools
     pkgs.fuse
 
     # Initrd assembly
@@ -43,6 +46,9 @@ pkgs.mkShell {
 
   # Static cryptsetup for LUKS testing in QEMU initrd
   CRYPTSETUP_STATIC = "${pkgs.pkgsStatic.cryptsetup}/bin/cryptsetup";
+
+  # Static mkfs.btrfs for btrfs testing in QEMU initrd
+  MKFS_BTRFS_STATIC = "${pkgs.pkgsStatic.btrfs-progs}/bin/mkfs.btrfs";
 
   shellHook = ''
     echo "kexec-menu dev shell"
