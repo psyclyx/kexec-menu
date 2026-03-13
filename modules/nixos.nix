@@ -19,11 +19,6 @@ let
       }
     else null;
 
-  themedPackage =
-    if resolvedTheme != null
-    then cfg.package.override { theme = resolvedTheme; }
-    else cfg.package;
-
   copyBlob = {
     copy = ''
       # Hash dedup: skip copy if destination already has identical content
@@ -112,7 +107,7 @@ let
       # Optionally install UKI
       ${lib.optionalString (cfg.ukiInstallPath != null) ''
         mkdir -p "$(dirname "${cfg.ukiInstallPath}")"
-        cp "${themedPackage}" "${cfg.ukiInstallPath}"
+        cp "${cfg.finalPackage}" "${cfg.ukiInstallPath}"
       ''}
     '';
   };
@@ -151,7 +146,28 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
+      default = let
+        top = import ./..;
+        arch =
+          if pkgs.stdenv.hostPlatform.isx86_64 then "x86_64"
+          else if pkgs.stdenv.hostPlatform.isAarch64 then "aarch64"
+          else throw "kexec-menu: unsupported architecture";
+      in top."uki-${arch}";
+      defaultText = lib.literalExpression ''
+        (import ''${kexec-menu-src})."uki-''${arch}"
+      '';
       description = "The kexec-menu UKI package.";
+    };
+
+    finalPackage = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      default =
+        if resolvedTheme != null
+        then cfg.package.override { theme = resolvedTheme; }
+        else cfg.package;
+      defaultText = lib.literalExpression "cfg.package (with theme overrides applied)";
+      description = "The final kexec-menu UKI package after applying theme overrides. Read-only.";
     };
 
     theme = lib.mkOption {
