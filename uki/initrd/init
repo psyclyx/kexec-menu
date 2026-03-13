@@ -1,0 +1,25 @@
+#!/bin/busybox sh
+#
+# Minimal init for kexec-menu UKI.
+# Mounts pseudo-filesystems, then runs the boot menu.
+# On failure: drops to rescue shell (if busybox present) or reboots.
+
+export PATH=/bin
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null
+mkdir -p /dev/mapper /run /tmp
+
+/bin/kexec-menu
+STATUS=$?
+
+# kexec-menu only returns on failure (successful boot doesn't return)
+if [ -x /bin/sh ]; then
+    echo "kexec-menu exited ($STATUS), dropping to rescue shell"
+    exec /bin/sh
+fi
+echo "kexec-menu exited ($STATUS), rebooting in 5s"
+sleep 5
+reboot -f
