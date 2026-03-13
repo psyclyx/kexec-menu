@@ -603,6 +603,95 @@ fn path_to_cstring(p: &Path) -> Result<CString> {
         .map_err(|_| Error::Parse("path contains NUL byte".into()))
 }
 
+// --- Multi-device mounting ---
+
+/// Mount a multi-device filesystem group read-only.
+///
+/// For bcachefs: passes all devices as a colon-separated source string.
+/// For btrfs: runs `btrfs device scan` on each member, then mounts the first.
+///
+/// Returns the mount point on success, or an error.
+pub fn mount_group_ro(group: &DeviceGroup) -> Result<PathBuf> {
+    match group.fstype {
+        #[cfg(feature = "fs-bcachefs")]
+        FsType::Bcachefs => mount_bcachefs_group(group),
+        #[cfg(feature = "fs-btrfs")]
+        FsType::Btrfs => mount_btrfs_group(group),
+        _ => Err(Error::Parse(format!(
+            "{} does not support multi-device mount",
+            group.fstype.as_str()
+        ))),
+    }
+}
+
+/// Mount a multi-device bcachefs filesystem.
+/// bcachefs mount accepts "dev1:dev2:dev3" as the source device.
+#[cfg(feature = "fs-bcachefs")]
+fn mount_bcachefs_group(group: &DeviceGroup) -> Result<PathBuf> {
+    // Build colon-separated device string
+    let dev_str: String = group.devices.iter()
+        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(":");
+
+    // Use first device name for mount point
+    let first_name = group.devices.first()
+        .and_then(|(p, _)| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mount_point = PathBuf::from(MOUNT_BASE).join(format!("{first_name}-multi"));
+    fs::create_dir_all(&mount_point)?;
+
+    let c_dev = CString::new(dev_str.as_bytes())
+        .map_err(|_| Error::Parse("device string contains NUL byte".into()))?;
+    let c_target = path_to_cstring(&mount_point)?;
+    let c_fstype = CString::new("bcachefs").unwrap();
+
+    let ret = unsafe {
+        libc::mount(
+            c_dev.as_ptr(),
+            c_target.as_ptr(),
+            c_fstype.as_ptr(),
+            libc::MS_RDONLY,
+            std::ptr::null(),
+        )
+    };
+
+    if ret != 0 {
+        return Err(Error::Io(io::Error::last_os_error()));
+    }
+
+    Ok(mount_point)
+}
+
+/// Mount a multi-device btrfs filesystem.
+/// Requires `btrfs device scan` on each member before mounting any one device.
+#[cfg(feature = "fs-btrfs")]
+fn mount_btrfs_group(group: &DeviceGroup) -> Result<PathBuf> {
+    // Scan each device so the kernel knows about the full filesystem
+    for (dev_path, _) in &group.devices {
+        let output = Command::new("btrfs")
+            .args(["device", "scan"])
+            .arg(dev_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Parse(format!(
+                "btrfs device scan {}: {}",
+                dev_path.display(),
+                stderr.trim()
+            )));
+        }
+    }
+
+    // Mount the first device (kernel assembles the rest)
+    let first_dev = &group.devices[0].0;
+    mount_ro(first_dev, FsType::Btrfs)
+}
+
 // --- Disk whitelist ---
 
 /// Check whether a device name matches a whitelist pattern.
@@ -651,12 +740,13 @@ pub fn best_label(dev: &BlockDevice, fstype: Option<FsType>) -> String {
 /// Discover all mountable sources by enumerating block devices and probing.
 ///
 /// For each device:
-/// - Probe filesystem type
-/// - Determine label
-/// - Attempt read-only mount (clean filesystems)
+/// - Probe filesystem type (including multi-device info)
+/// - Group multi-device filesystems by UUID
+/// - Attempt read-only mount (single devices directly, multi-device via group mount)
 /// - Mark encrypted/errored sources appropriately
 pub fn discover_sources() -> Result<Vec<Source>> {
     let devices = enumerate_block_devices()?;
+    let mut probed_devices = Vec::new();
     let mut sources = Vec::new();
 
     for dev in &devices {
@@ -666,14 +756,14 @@ pub fn discover_sources() -> Result<Vec<Source>> {
         }
         let fstype = match probe_fs_type(&dev.path) {
             Ok(Some(ft)) => ft,
-            Ok(None) => continue, // no recognized filesystem
-            Err(_) => continue,   // can't read device, skip
+            Ok(None) => continue,
+            Err(_) => continue,
         };
 
-        let label = best_label(dev, Some(fstype));
-
+        // LUKS devices are never part of multi-device groups
         #[cfg(feature = "fs-luks")]
         if matches!(fstype, FsType::Luks) {
+            let label = best_label(dev, Some(fstype));
             sources.push(Source {
                 label,
                 device: dev.path.clone(),
@@ -684,12 +774,41 @@ pub fn discover_sources() -> Result<Vec<Source>> {
             continue;
         }
 
-        // All non-LUKS filesystem types are directly mountable
-        match mount_ro(&dev.path, fstype) {
+        // Probe multi-device info
+        let multi = read_multi_device_info(&dev.path, fstype).unwrap_or(None);
+        probed_devices.push(ProbeResult {
+            path: dev.path.clone(),
+            fstype,
+            multi,
+        });
+    }
+
+    // Separate multi-device groups from singles
+    let (groups, singles) = group_multi_device(probed_devices);
+
+    // Mount complete multi-device groups
+    for group in &groups {
+        let label = format_group_label(group, &devices);
+        if !group.is_complete() {
+            sources.push(Source {
+                label,
+                device: group.devices[0].0.clone(),
+                state: SourceState::Error(format!(
+                    "incomplete: {}/{} devices",
+                    group.devices.len(),
+                    group.nr_expected
+                )),
+                mount_point: None,
+                passphrase: None,
+            });
+            continue;
+        }
+
+        match mount_group_ro(group) {
             Ok(mp) => {
                 sources.push(Source {
                     label,
-                    device: dev.path.clone(),
+                    device: group.devices[0].0.clone(),
                     state: SourceState::Mounted,
                     mount_point: Some(mp),
                     passphrase: None,
@@ -697,12 +816,12 @@ pub fn discover_sources() -> Result<Vec<Source>> {
             }
             #[cfg(feature = "fs-bcachefs")]
             Err(Error::Io(ref e))
-                if fstype == FsType::Bcachefs
+                if group.fstype == FsType::Bcachefs
                     && e.raw_os_error() == Some(ENOKEY) =>
             {
                 sources.push(Source {
                     label,
-                    device: dev.path.clone(),
+                    device: group.devices[0].0.clone(),
                     state: SourceState::Encrypted,
                     mount_point: None,
                     passphrase: None,
@@ -711,7 +830,48 @@ pub fn discover_sources() -> Result<Vec<Source>> {
             Err(e) => {
                 sources.push(Source {
                     label,
-                    device: dev.path.clone(),
+                    device: group.devices[0].0.clone(),
+                    state: SourceState::Error(format!("{e}")),
+                    mount_point: None,
+                    passphrase: None,
+                });
+            }
+        }
+    }
+
+    // Mount single-device filesystems (existing path)
+    for single in &singles {
+        let dev = devices.iter().find(|d| d.path == single.path);
+        let label = dev.map(|d| best_label(d, Some(single.fstype)))
+            .unwrap_or_else(|| single.path.display().to_string());
+
+        match mount_ro(&single.path, single.fstype) {
+            Ok(mp) => {
+                sources.push(Source {
+                    label,
+                    device: single.path.clone(),
+                    state: SourceState::Mounted,
+                    mount_point: Some(mp),
+                    passphrase: None,
+                });
+            }
+            #[cfg(feature = "fs-bcachefs")]
+            Err(Error::Io(ref e))
+                if single.fstype == FsType::Bcachefs
+                    && e.raw_os_error() == Some(ENOKEY) =>
+            {
+                sources.push(Source {
+                    label,
+                    device: single.path.clone(),
+                    state: SourceState::Encrypted,
+                    mount_point: None,
+                    passphrase: None,
+                });
+            }
+            Err(e) => {
+                sources.push(Source {
+                    label,
+                    device: single.path.clone(),
                     state: SourceState::Error(format!("{e}")),
                     mount_point: None,
                     passphrase: None,
@@ -721,6 +881,22 @@ pub fn discover_sources() -> Result<Vec<Source>> {
     }
 
     Ok(sources)
+}
+
+/// Format a label for a multi-device group.
+fn format_group_label(group: &DeviceGroup, devices: &[BlockDevice]) -> String {
+    // Try to get a filesystem label from the first device
+    let first_dev = &group.devices[0].0;
+    if let Some(dev) = devices.iter().find(|d| d.path == *first_dev) {
+        let label = best_label(dev, Some(group.fstype));
+        return format!("{} ({}×{})", label, group.nr_expected, group.fstype.as_str());
+    }
+    format!(
+        "{} ({}×{})",
+        first_dev.display(),
+        group.nr_expected,
+        group.fstype.as_str()
+    )
 }
 
 // --- Encrypted source unlocking ---
