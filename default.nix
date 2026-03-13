@@ -79,9 +79,10 @@ let
       arch = "x86_64";
     };
 
-    kernel-aarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./uki/kernel/kernel.nix {
+    kernel-aarch64 = pkgs.callPackage ./uki/kernel/kernel.nix {
       inherit kernelSrc;
       arch = "aarch64";
+      crossCC = pkgs.pkgsCross.aarch64-multiplatform.stdenv.cc;
     };
 
     # ── Initrd ──────────────────────────────────────────────────────────

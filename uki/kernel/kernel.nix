@@ -23,6 +23,7 @@
   cmdline ? "",
   extraConfig ? null,
   logo ? null,
+  crossCC ? null,
 
   # Build dependencies
   flex,
@@ -49,7 +50,7 @@ runCommand "kexec-menu-kernel-${arch}" {
   nativeBuildInputs = [
     flex bison bc perl elfutils openssl gnumake stdenv.cc
     gzip cpio zstd python3 pkg-config
-  ];
+  ] ++ lib.optionals (crossCC != null) [ crossCC ];
 } ''
   src="$TMPDIR/linux-src"
   mkdir -p "$src"
@@ -57,9 +58,11 @@ runCommand "kexec-menu-kernel-${arch}" {
 
   mkdir -p "$out"
 
+  export BUILD_DIR="$TMPDIR"
   export KERNEL_SRC="$src"
   export ARCH=${arch}
   export CONFIG_DIR=${configDir}
+  ${lib.optionalString (crossCC != null) "export CROSS_COMPILE=${crossCC.targetPrefix}"}
   export OUTPUT="$out/${imageName}"
   ${lib.optionalString (initramfs != null) "export INITRAMFS=${initramfs}"}
   ${lib.optionalString (cmdline != "") ''export CMDLINE="${cmdline}"''}
