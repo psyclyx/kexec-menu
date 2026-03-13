@@ -37,6 +37,14 @@ let
   musl64 = pkgs.pkgsCross.musl64;
   aarch64Musl = pkgs.pkgsCross.aarch64-multiplatform-musl;
 
+  hostArch = pkgs.stdenv.hostPlatform.linuxArch;
+
+  # Cross compilers for kernel builds — only used when host != target
+  crossCCFor = {
+    x86_64  = if hostArch != "x86"   then pkgs.pkgsCross.gnu64.stdenv.cc                else null;
+    aarch64 = if hostArch != "arm64" then pkgs.pkgsCross.aarch64-multiplatform.stdenv.cc else null;
+  };
+
   logo = pkgs.callPackage ./uki/logo/logo.nix {};
 
   # Pinned kernel source — shared between x86_64 and aarch64 builds
@@ -77,12 +85,13 @@ let
     kernel-x86_64 = pkgs.callPackage ./uki/kernel/kernel.nix {
       inherit kernelSrc;
       arch = "x86_64";
+      crossCC = crossCCFor.x86_64;
     };
 
     kernel-aarch64 = pkgs.callPackage ./uki/kernel/kernel.nix {
       inherit kernelSrc;
       arch = "aarch64";
-      crossCC = pkgs.pkgsCross.aarch64-multiplatform.stdenv.cc;
+      crossCC = crossCCFor.aarch64;
     };
 
     # ── Initrd ──────────────────────────────────────────────────────────

@@ -111,12 +111,15 @@ fi
 # --- Set up cross-compilation for aarch64 ---
 
 MAKE_ARGS="ARCH=$KARCH -j$JOBS"
-if [ "$ARCH" = "aarch64" ]; then
-    host_arch="$(uname -m)"
-    if [ "$host_arch" != "aarch64" ]; then
-        CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
-        MAKE_ARGS="$MAKE_ARGS CROSS_COMPILE=$CROSS_COMPILE"
-    fi
+host_arch="$(uname -m)"
+if [ -n "${CROSS_COMPILE:-}" ]; then
+    MAKE_ARGS="$MAKE_ARGS CROSS_COMPILE=$CROSS_COMPILE"
+elif [ "$ARCH" = "aarch64" ] && [ "$host_arch" != "aarch64" ]; then
+    CROSS_COMPILE="aarch64-linux-gnu-"
+    MAKE_ARGS="$MAKE_ARGS CROSS_COMPILE=$CROSS_COMPILE"
+elif [ "$ARCH" = "x86_64" ] && [ "$host_arch" != "x86_64" ]; then
+    CROSS_COMPILE="x86_64-linux-gnu-"
+    MAKE_ARGS="$MAKE_ARGS CROSS_COMPILE=$CROSS_COMPILE"
 fi
 
 # --- Build ---
