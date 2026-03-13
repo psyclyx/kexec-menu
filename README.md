@@ -119,24 +119,42 @@ Import `modules/nixos.nix` and enable it:
 { imports = [ kexec-menu.modules.nixos ]; }
 
 {
-  boot.loader.kexec-menu = {
-    enable = true;
-    package = kexec-menu-uki;  # your built UKI package
-  };
+  boot.loader.kexec-menu.enable = true;
 }
 ```
+
+The `package` option defaults to the UKI built from the kexec-menu source tree.
+Override it only if you need a custom build.
+
+### Stylix Integration
+
+For automatic theme integration with [Stylix](https://github.com/danth/stylix),
+import the stylix module:
+
+```nix
+{ imports = [
+    kexec-menu.modules.nixos
+    kexec-menu.modules.stylix
+  ];
+}
+```
+
+This adds `stylix.targets.kexec-menu.enable` (default: `true` when Stylix is
+active). The boot menu TUI will use your Stylix Base16 palette automatically.
 
 ### Options
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `enable` | bool | `false` | Enable the kexec-menu bootloader |
-| `package` | package | — | The kexec-menu UKI package |
+| `package` | package | `uki-${arch}` | The kexec-menu UKI package |
+| `finalPackage` | package | (read-only) | UKI with theme/timeout overrides applied |
 | `bootMountPoint` | string | `"/boot"` | Where boot entries are written |
 | `retention` | positive int | `10` | Number of generations to keep |
 | `installStrategy` | `"copy"` or `"reflink"` | `"copy"` | How blobs are placed. `copy` skips identical files (any fs). `reflink` uses `cp --reflink=auto` (saves space on bcachefs/btrfs). |
 | `ukiInstallPath` | null or string | `null` | If set, copy the UKI to this path on each rebuild |
-| `theme` | null or attrs | `null` | Base16 hex colorscheme. Auto-detected from Stylix if present. |
+| `timeout` | null or uint | `null` | Autoboot timeout in seconds. `null` = compiled-in default (5s). |
+| `theme` | null or attrs | `null` | Base16 hex colorscheme. Import `modules/stylix.nix` for auto-detection. |
 
 The module hooks into `boot.loader.external` — each `nixos-rebuild` runs the
 installer, which copies kernel/initrd/entries.json into a generation leaf

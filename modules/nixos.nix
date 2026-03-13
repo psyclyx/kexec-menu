@@ -10,22 +10,6 @@ let
     else if pkgs.stdenv.hostPlatform.isAarch64 then "aarch64"
     else throw "kexec-menu: unsupported architecture";
 
-  hasStylix = config ? stylix
-    && config.stylix ? enable && config.stylix.enable
-    && config ? lib && config.lib ? stylix && config.lib.stylix ? colors;
-
-  # Resolve theme: explicit > stylix > null
-  resolvedTheme =
-    if cfg.theme != null then cfg.theme
-    else if hasStylix then
-      let c = config.lib.stylix.colors; in
-      builtins.mapAttrs (_: toString) {
-        inherit (c) base00 base01 base02 base03 base04 base05
-                     base06 base07 base08 base09 base0A base0B
-                     base0C base0D base0E base0F;
-      }
-    else null;
-
   copyBlob = {
     copy = ''
       # Hash dedup: skip copy if destination already has identical content
@@ -166,7 +150,7 @@ in
       default =
         let
           binaryOverrides =
-            lib.optionalAttrs (resolvedTheme != null) { theme = resolvedTheme; }
+            lib.optionalAttrs (cfg.theme != null) { theme = cfg.theme; }
             // lib.optionalAttrs (cfg.timeout != null) { inherit (cfg) timeout; };
         in
           if binaryOverrides == {} then cfg.package
@@ -206,8 +190,8 @@ in
       '';
       description = ''
         Base16 colorscheme for the boot menu TUI. Attrset of hex color values
-        (without #). When null, auto-detected from Stylix if present, otherwise
-        the default terminal palette is used.
+        (without #). When null, the default terminal palette is used.
+        Import modules/stylix.nix for automatic Stylix integration.
       '';
     };
   };
