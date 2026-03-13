@@ -36,14 +36,15 @@ impl FsType {
     }
 
     /// Kernel filesystem type string for mount(2).
-    pub fn mount_type(&self) -> &'static str {
+    /// Returns None for LUKS (not directly mountable).
+    pub fn mount_type(&self) -> Option<&'static str> {
         match self {
-            FsType::Ext4 => "ext4",
-            FsType::Btrfs => "btrfs",
-            FsType::Bcachefs => "bcachefs",
-            FsType::Xfs => "xfs",
-            FsType::F2fs => "f2fs",
-            FsType::Luks => panic!("LUKS is not directly mountable"),
+            FsType::Ext4 => Some("ext4"),
+            FsType::Btrfs => Some("btrfs"),
+            FsType::Bcachefs => Some("bcachefs"),
+            FsType::Xfs => Some("xfs"),
+            FsType::F2fs => Some("f2fs"),
+            FsType::Luks => None,
         }
     }
 }
@@ -218,8 +219,7 @@ pub fn enumerate_block_devices() -> Result<Vec<BlockDevice>> {
     let sys_block = Path::new("/sys/block");
 
     let entries = fs::read_dir(sys_block)?;
-    for entry in entries {
-        let entry = entry?;
+    for entry in entries.flatten() {
         let disk_name = entry.file_name().to_string_lossy().into_owned();
 
         // Skip ram disks and loop devices
@@ -232,8 +232,7 @@ pub fn enumerate_block_devices() -> Result<Vec<BlockDevice>> {
 
         // Look for partition subdirectories (they have a "partition" file in sysfs)
         if let Ok(children) = fs::read_dir(&disk_dir) {
-            for child in children {
-                let child = child?;
+            for child in children.flatten() {
                 let child_path = child.path();
                 if child_path.join("partition").exists() {
                     has_partitions = true;
@@ -329,7 +328,9 @@ pub fn mount_ro(dev: &Path, fstype: FsType) -> Result<PathBuf> {
 
     let c_dev = path_to_cstring(dev)?;
     let c_target = path_to_cstring(&mount_point)?;
-    let c_fstype = CString::new(fstype.mount_type())
+    let mount_type = fstype.mount_type()
+        .ok_or_else(|| Error::Parse(format!("{} is not directly mountable", fstype.as_str())))?;
+    let c_fstype = CString::new(mount_type)
         .map_err(|_| Error::Parse("invalid fstype string".into()))?;
 
     // MS_RDONLY = 1
@@ -575,17 +576,16 @@ mod tests {
 
     #[test]
     fn fstype_mount_type() {
-        assert_eq!(FsType::Ext4.mount_type(), "ext4");
-        assert_eq!(FsType::Btrfs.mount_type(), "btrfs");
-        assert_eq!(FsType::Bcachefs.mount_type(), "bcachefs");
-        assert_eq!(FsType::Xfs.mount_type(), "xfs");
-        assert_eq!(FsType::F2fs.mount_type(), "f2fs");
+        assert_eq!(FsType::Ext4.mount_type(), Some("ext4"));
+        assert_eq!(FsType::Btrfs.mount_type(), Some("btrfs"));
+        assert_eq!(FsType::Bcachefs.mount_type(), Some("bcachefs"));
+        assert_eq!(FsType::Xfs.mount_type(), Some("xfs"));
+        assert_eq!(FsType::F2fs.mount_type(), Some("f2fs"));
     }
 
     #[test]
-    #[should_panic(expected = "LUKS is not directly mountable")]
-    fn fstype_luks_mount_panics() {
-        let _ = FsType::Luks.mount_type();
+    fn fstype_luks_mount_returns_none() {
+        assert_eq!(FsType::Luks.mount_type(), None);
     }
 
     // --- probe_fs_type tests with synthetic block devices ---

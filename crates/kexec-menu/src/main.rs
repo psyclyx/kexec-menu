@@ -49,8 +49,7 @@ fn run(dry_run: bool, auto_default: bool) -> Result<(), Box<dyn std::fmt::Displa
     }
 
     if sources.is_empty() {
-        eprintln!("kexec-menu: no boot sources found");
-        process::exit(1);
+        return Err(boxed("no boot sources found"));
     }
 
     // Resolve default boot selection
@@ -232,9 +231,10 @@ fn run_tui(
                         return Ok(TuiResult::Quit);
                     }
                     tui::Action::Boot { source_idx, entry } => {
-                        let leaf_path = find_entry_leaf_path(&view);
-                        cleanup(&mut output)?;
-                        return Ok(TuiResult::Boot { leaf_path, entry, source_idx });
+                        if let Some(leaf_path) = find_entry_leaf_path(&view) {
+                            cleanup(&mut output)?;
+                            return Ok(TuiResult::Boot { leaf_path, entry, source_idx });
+                        }
                     }
                     tui::Action::UnlockSource(idx) => {
                         let label = sources.get(idx)
@@ -366,14 +366,13 @@ fn run_tui(
 }
 
 /// Find the leaf path for the entry at the current cursor position in the tree view.
-fn find_entry_leaf_path(view: &tui::TreeView) -> PathBuf {
-    // Walk backward from cursor to find the parent Leaf node
+fn find_entry_leaf_path(view: &tui::TreeView) -> Option<PathBuf> {
     for i in (0..=view.cursor).rev() {
         if let tui::NodeKind::Leaf { path, .. } = &view.nodes[i].kind {
-            return path.clone();
+            return Some(path.clone());
         }
     }
-    PathBuf::new()
+    None
 }
 
 fn build_source_tree(src: &Source, trees: &mut Vec<(String, Vec<TreeNode>)>) {

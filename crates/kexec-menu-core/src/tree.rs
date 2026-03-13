@@ -171,7 +171,9 @@ impl<'a> JsonParser<'a> {
 /// leaves (directly or transitively) are omitted.
 pub fn walk_boot_tree(root: &Path) -> Result<Vec<TreeNode>> {
     let mut nodes = Vec::new();
-    let mut dir_entries: Vec<_> = fs::read_dir(root)?.collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut dir_entries: Vec<_> = fs::read_dir(root)?
+        .flatten()
+        .collect::<Vec<_>>();
     dir_entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
     for de in dir_entries {
@@ -183,20 +185,26 @@ pub fn walk_boot_tree(root: &Path) -> Result<Vec<TreeNode>> {
         let entries_json = path.join("entries.json");
 
         if entries_json.is_file() {
-            // This is a leaf
-            let json = fs::read_to_string(&entries_json)?;
-            let entries = parse_entries(&json)?;
-            let mtime = fs::metadata(&path)?
-                .modified()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            // This is a leaf — skip if entries.json is malformed or unreadable
+            let json = match fs::read_to_string(&entries_json) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let entries = match parse_entries(&json) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let mtime = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+                .unwrap_or(0);
             nodes.push(TreeNode::Leaf(Leaf { path, entries, mtime }));
         } else {
-            // Recurse; only include if it has children
-            let children = walk_boot_tree(&path)?;
-            if !children.is_empty() {
-                nodes.push(TreeNode::Dir { name, children });
+            // Recurse; skip subdirectories we can't read, only include if it has children
+            if let Ok(children) = walk_boot_tree(&path) {
+                if !children.is_empty() {
+                    nodes.push(TreeNode::Dir { name, children });
+                }
             }
         }
     }
