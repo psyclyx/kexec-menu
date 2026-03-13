@@ -1,39 +1,46 @@
 #!/bin/sh
-# mkkernel.sh — build a minimal kernel for kexec-menu from source
+# mkkernel.sh — download and build a minimal kernel for kexec-menu
 #
 # Builds from tinyconfig + the project's config fragments (common.config +
 # arch-specific). Optionally embeds an initramfs, command line, and boot logo.
 #
-# Required:
-#   KERNEL_SRC  — path to kernel source directory (extracted tarball)
-#   ARCH        — "x86_64" or "aarch64"
-#
 # Optional:
-#   CONFIG_DIR  — path to config fragments dir (default: uki/kernel/ in repo)
-#   EXTRA_CONFIG — path to additional config fragment to merge last
-#   INITRAMFS   — path to CPIO archive to embed (CONFIG_INITRAMFS_SOURCE)
-#   CMDLINE     — kernel command line string to embed (CONFIG_CMDLINE)
-#   LOGO        — path to 80x80 PPM file (replaces default boot logo)
-#   OUTPUT      — output file path (default: vmlinuz or Image next to source)
-#   JOBS        — parallel make jobs (default: nproc)
+#   KERNEL_SRC     — path to existing kernel source dir (skips download)
+#   KERNEL_VERSION — version to download (default: 6.12.6)
+#   ARCH           — "x86_64" or "aarch64" (default: x86_64)
+#   CONFIG_DIR     — path to config fragments dir (default: uki/kernel/ in repo)
+#   EXTRA_CONFIG   — path to additional config fragment to merge last
+#   INITRAMFS      — path to CPIO archive to embed (CONFIG_INITRAMFS_SOURCE)
+#   CMDLINE        — kernel command line string to embed (CONFIG_CMDLINE)
+#   LOGO           — path to 80x80 PPM file (replaces default boot logo)
+#   OUTPUT         — output file path (default: build/vmlinuz or build/Image)
+#   JOBS           — parallel make jobs (default: nproc)
 #
 # Usage:
-#   KERNEL_SRC=~/linux-6.12 ARCH=x86_64 ./scripts/mkkernel.sh
-#   KERNEL_SRC=~/linux-6.12 ARCH=aarch64 INITRAMFS=initrd.cpio \
-#     CMDLINE="console=ttyAMA0" ./scripts/mkkernel.sh
+#   ./scripts/mkkernel.sh                             # download + build x86_64
+#   ARCH=aarch64 ./scripts/mkkernel.sh                # download + build aarch64
+#   KERNEL_SRC=~/linux-6.12.6 ./scripts/mkkernel.sh   # use existing source
+#   KERNEL_VERSION=6.13.1 ./scripts/mkkernel.sh       # specific version
 #
 # Dependencies: make, gcc (or cross toolchain), flex, bison, bc, perl,
-#               standard coreutils. For aarch64 cross-build: aarch64-linux-gnu-gcc.
+#               wget/curl (for download), tar, standard coreutils.
+#               For aarch64 cross-build: aarch64-linux-gnu-gcc.
 
 set -eu
 
 die() { echo "mkkernel: error: $1" >&2; exit 1; }
 
-# --- Validate required inputs ---
+KERNEL_VERSION="${KERNEL_VERSION:-6.12.6}"
+ARCH="${ARCH:-x86_64}"
+JOBS="${JOBS:-$(nproc 2>/dev/null || echo 1)}"
 
-[ -n "${KERNEL_SRC:-}" ] || die "KERNEL_SRC not set"
-[ -d "$KERNEL_SRC" ]     || die "KERNEL_SRC not a directory: $KERNEL_SRC"
-[ -n "${ARCH:-}" ]       || die "ARCH not set (x86_64 or aarch64)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUILD_DIR="${BUILD_DIR:-$REPO_DIR/build}"
+
+mkdir -p "$BUILD_DIR"
+
+# --- Architecture setup ---
 
 case "$ARCH" in
     x86_64)  KARCH=x86;  IMAGE_NAME=bzImage; IMAGE_PATH=arch/x86/boot/bzImage ;;
@@ -41,9 +48,37 @@ case "$ARCH" in
     *) die "unsupported ARCH: $ARCH (expected x86_64 or aarch64)" ;;
 esac
 
+# --- Download source if not provided ---
+
+if [ -z "${KERNEL_SRC:-}" ]; then
+    KERNEL_SRC="$BUILD_DIR/linux-${KERNEL_VERSION}"
+
+    if [ ! -d "$KERNEL_SRC" ]; then
+        TARBALL="linux-${KERNEL_VERSION}.tar.xz"
+        TARBALL_PATH="$BUILD_DIR/$TARBALL"
+
+        if [ ! -f "$TARBALL_PATH" ]; then
+            # kernel.org major version directory
+            MAJOR_VERSION="${KERNEL_VERSION%%.*}"
+            URL="https://cdn.kernel.org/pub/linux/kernel/v${MAJOR_VERSION}.x/$TARBALL"
+            echo "mkkernel: downloading linux $KERNEL_VERSION" >&2
+            if command -v wget >/dev/null 2>&1; then
+                wget -q -O "$TARBALL_PATH" "$URL" || die "download failed: $URL"
+            elif command -v curl >/dev/null 2>&1; then
+                curl -fsSL -o "$TARBALL_PATH" "$URL" || die "download failed: $URL"
+            else
+                die "neither wget nor curl found"
+            fi
+        fi
+        echo "mkkernel: extracting $TARBALL" >&2
+        tar -xf "$TARBALL_PATH" -C "$BUILD_DIR"
+    fi
+fi
+
+[ -d "$KERNEL_SRC" ] || die "source directory not found: $KERNEL_SRC"
+
 # --- Locate config fragments ---
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_DIR="${CONFIG_DIR:-$SCRIPT_DIR/../uki/kernel}"
 
 [ -f "$CONFIG_DIR/common.config" ]     || die "common.config not found in $CONFIG_DIR"
@@ -64,7 +99,14 @@ if [ -n "${EXTRA_CONFIG:-}" ]; then
     [ -f "$EXTRA_CONFIG" ] || die "EXTRA_CONFIG not found: $EXTRA_CONFIG"
 fi
 
-JOBS="${JOBS:-$(nproc 2>/dev/null || echo 1)}"
+# --- Default output path ---
+
+if [ -z "${OUTPUT:-}" ]; then
+    case "$ARCH" in
+        x86_64)  OUTPUT="$BUILD_DIR/vmlinuz" ;;
+        aarch64) OUTPUT="$BUILD_DIR/Image" ;;
+    esac
+fi
 
 # --- Set up cross-compilation for aarch64 ---
 
@@ -138,9 +180,5 @@ kmake "$IMAGE_NAME"
 BUILT="$KERNEL_SRC/$IMAGE_PATH"
 [ -f "$BUILT" ] || die "build succeeded but $IMAGE_PATH not found"
 
-if [ -n "${OUTPUT:-}" ]; then
-    cp "$BUILT" "$OUTPUT"
-    echo "mkkernel: wrote $OUTPUT" >&2
-else
-    echo "mkkernel: built $BUILT" >&2
-fi
+cp "$BUILT" "$OUTPUT"
+echo "mkkernel: wrote $OUTPUT" >&2

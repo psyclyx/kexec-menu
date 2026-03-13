@@ -18,12 +18,12 @@
 # Component builds (from source — downloads automatically):
 #   make busybox ARCH=x86_64           # build static busybox from source
 #   make bcachefs-tools ARCH=x86_64    # build static bcachefs binary from source
+#   make kernel ARCH=x86_64            # download + build minimal kernel from source
 #
 # UKI build targets (see README for full instructions):
 #   make logo                          # generate boot logo PPM
 #   make initrd ARCH=x86_64            # assemble initrd (needs BUSYBOX, CRYPTSETUP, BCACHEFS)
-#   make kernel ARCH=x86_64 KERNEL_SRC=~/linux-6.x  # build minimal kernel
-#   make uki    ARCH=x86_64 KERNEL_SRC=~/linux-6.x  # full UKI (orchestrates all above)
+#   make uki    ARCH=x86_64            # full UKI (orchestrates all above)
 
 CARGO ?= cargo
 RUSTFLAGS_STATIC = -C target-feature=+crt-static
@@ -67,6 +67,7 @@ BCACHEFS   ?=
 # Component build versions (for building from source)
 BUSYBOX_VERSION   ?= 1.36.1
 BCACHEFS_VERSION  ?= v1.11.0
+KERNEL_VERSION    ?= 6.12.6
 
 # Kernel build inputs
 KERNEL_SRC ?=
@@ -135,7 +136,8 @@ $(INITRD): $(BIN) scripts/mkinitrd.sh | $(BUILD_DIR)
 kernel: $(KERNEL_OUT)
 
 $(KERNEL_OUT): $(INITRD) $(LOGO_PPM) scripts/mkkernel.sh | $(BUILD_DIR)
-	KERNEL_SRC=$(KERNEL_SRC) ARCH=$(ARCH) INITRAMFS=$(INITRD) CMDLINE="$(CMDLINE)" LOGO=$(LOGO_PPM) \
+	$(if $(KERNEL_SRC),KERNEL_SRC=$(KERNEL_SRC) )KERNEL_VERSION=$(KERNEL_VERSION) ARCH=$(ARCH) \
+	BUILD_DIR=$(BUILD_DIR) INITRAMFS=$(INITRD) CMDLINE="$(CMDLINE)" LOGO=$(LOGO_PPM) \
 	$(if $(EXTRA_CONFIG),EXTRA_CONFIG=$(EXTRA_CONFIG) )OUTPUT=$(KERNEL_OUT) ./scripts/mkkernel.sh
 
 uki: $(UKI_OUT)
