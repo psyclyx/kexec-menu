@@ -46,7 +46,7 @@ jobs:
           path: artifacts/
 
   build-aarch64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
@@ -66,6 +66,16 @@ jobs:
         with:
           name: aarch64
           path: artifacts/
+
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: cross-compile aarch64 binary
+        run: nix-build -A kexec-menu-aarch64
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
