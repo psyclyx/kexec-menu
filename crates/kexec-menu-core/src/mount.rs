@@ -353,6 +353,96 @@ fn read_btrfs_multi_device(dev: &Path) -> Result<Option<MultiDeviceInfo>> {
     }))
 }
 
+// --- Multi-device grouping ---
+
+/// A group of devices that belong to the same multi-device filesystem.
+#[derive(Debug, Clone)]
+pub struct DeviceGroup {
+    /// Filesystem type shared by all members.
+    pub fstype: FsType,
+    /// Filesystem UUID that ties the devices together.
+    pub fs_uuid: [u8; 16],
+    /// Member devices: (path, dev_idx).
+    pub devices: Vec<(PathBuf, u32)>,
+    /// Expected total number of devices.
+    pub nr_expected: u32,
+}
+
+impl DeviceGroup {
+    /// True if all expected devices have been found.
+    pub fn is_complete(&self) -> bool {
+        self.devices.len() as u32 >= self.nr_expected
+    }
+}
+
+/// A device with its detected filesystem type and optional multi-device info.
+pub struct ProbeResult {
+    pub path: PathBuf,
+    pub fstype: FsType,
+    pub multi: Option<MultiDeviceInfo>,
+}
+
+/// Group probed devices into multi-device groups and single devices.
+///
+/// Returns `(groups, singles)` where `groups` are multi-device filesystem
+/// groups and `singles` are devices that don't belong to any group.
+pub fn group_multi_device(probed: Vec<ProbeResult>) -> (Vec<DeviceGroup>, Vec<ProbeResult>) {
+    use std::collections::HashMap;
+
+    let mut groups: HashMap<([u8; 16], u8), DeviceGroup> = HashMap::new();
+    let mut singles = Vec::new();
+
+    for p in probed {
+        match p.multi {
+            Some(ref info) => {
+                let key = (info.fs_uuid, fstype_tag(p.fstype));
+                let group = groups.entry(key).or_insert_with(|| DeviceGroup {
+                    fstype: p.fstype,
+                    fs_uuid: info.fs_uuid,
+                    devices: Vec::new(),
+                    nr_expected: info.nr_devices,
+                });
+                group.devices.push((p.path.clone(), info.dev_idx));
+                // Update nr_expected to the max seen (defensive)
+                if info.nr_devices > group.nr_expected {
+                    group.nr_expected = info.nr_devices;
+                }
+            }
+            None => singles.push(p),
+        }
+    }
+
+    // Sort device lists by dev_idx for deterministic ordering
+    let mut groups: Vec<DeviceGroup> = groups.into_values().collect();
+    for g in &mut groups {
+        g.devices.sort_by_key(|&(_, idx)| idx);
+    }
+    // Sort groups by first device path for deterministic output
+    groups.sort_by(|a, b| a.devices.first().map(|d| &d.0).cmp(&b.devices.first().map(|d| &d.0)));
+
+    (groups, singles)
+}
+
+/// Map FsType to a u8 tag for use as a hash key discriminant.
+/// Prevents grouping devices with same UUID but different fstype
+/// (shouldn't happen in practice, but defensive).
+fn fstype_tag(ft: FsType) -> u8 {
+    match ft {
+        #[cfg(feature = "fs-ext4")]
+        FsType::Ext4 => 1,
+        #[cfg(feature = "fs-btrfs")]
+        FsType::Btrfs => 2,
+        #[cfg(feature = "fs-bcachefs")]
+        FsType::Bcachefs => 3,
+        #[cfg(feature = "fs-xfs")]
+        FsType::Xfs => 4,
+        #[cfg(feature = "fs-f2fs")]
+        FsType::F2fs => 5,
+        #[cfg(feature = "fs-luks")]
+        FsType::Luks => 6,
+    }
+}
+
 // --- Block device enumeration ---
 
 /// A discovered block device.
@@ -986,6 +1076,175 @@ mod tests {
         write_at(&tmp, 0, XFS_MAGIC);
         let info = read_multi_device_info(&tmp, FsType::Xfs).unwrap();
         assert!(info.is_none(), "XFS doesn't support multi-device");
+    }
+
+    // --- device grouping tests ---
+
+    #[cfg(feature = "fs-bcachefs")]
+    #[test]
+    fn group_two_bcachefs_devices() {
+        let uuid = [0xAA; 16];
+        let probed = vec![
+            ProbeResult {
+                path: PathBuf::from("/dev/sda1"),
+                fstype: FsType::Bcachefs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
+            },
+            ProbeResult {
+                path: PathBuf::from("/dev/sdb1"),
+                fstype: FsType::Bcachefs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 1 }),
+            },
+        ];
+        let (groups, singles) = group_multi_device(probed);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(singles.len(), 0);
+        let g = &groups[0];
+        assert_eq!(g.fstype, FsType::Bcachefs);
+        assert_eq!(g.fs_uuid, uuid);
+        assert_eq!(g.nr_expected, 2);
+        assert!(g.is_complete());
+        assert_eq!(g.devices.len(), 2);
+        // Sorted by dev_idx
+        assert_eq!(g.devices[0], (PathBuf::from("/dev/sda1"), 0));
+        assert_eq!(g.devices[1], (PathBuf::from("/dev/sdb1"), 1));
+    }
+
+    #[cfg(feature = "fs-bcachefs")]
+    #[test]
+    fn group_incomplete_bcachefs() {
+        let uuid = [0xBB; 16];
+        let probed = vec![
+            ProbeResult {
+                path: PathBuf::from("/dev/sda1"),
+                fstype: FsType::Bcachefs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 3, dev_idx: 0 }),
+            },
+            ProbeResult {
+                path: PathBuf::from("/dev/sdb1"),
+                fstype: FsType::Bcachefs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 3, dev_idx: 2 }),
+            },
+        ];
+        let (groups, singles) = group_multi_device(probed);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(singles.len(), 0);
+        let g = &groups[0];
+        assert_eq!(g.nr_expected, 3);
+        assert!(!g.is_complete());
+        assert_eq!(g.devices.len(), 2);
+    }
+
+    #[cfg(feature = "fs-btrfs")]
+    #[test]
+    fn group_two_btrfs_devices() {
+        let uuid = [0xCC; 16];
+        let probed = vec![
+            ProbeResult {
+                path: PathBuf::from("/dev/sda1"),
+                fstype: FsType::Btrfs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
+            },
+            ProbeResult {
+                path: PathBuf::from("/dev/sdb1"),
+                fstype: FsType::Btrfs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
+            },
+        ];
+        let (groups, singles) = group_multi_device(probed);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(singles.len(), 0);
+        assert!(groups[0].is_complete());
+    }
+
+    #[cfg(feature = "fs-ext4")]
+    #[test]
+    fn group_singles_pass_through() {
+        let probed = vec![
+            ProbeResult {
+                path: PathBuf::from("/dev/sda1"),
+                fstype: FsType::Ext4,
+                multi: None,
+            },
+            ProbeResult {
+                path: PathBuf::from("/dev/sdb1"),
+                fstype: FsType::Ext4,
+                multi: None,
+            },
+        ];
+        let (groups, singles) = group_multi_device(probed);
+        assert_eq!(groups.len(), 0);
+        assert_eq!(singles.len(), 2);
+    }
+
+    #[cfg(all(feature = "fs-bcachefs", feature = "fs-ext4"))]
+    #[test]
+    fn group_mixed_multi_and_single() {
+        let uuid = [0xDD; 16];
+        let probed = vec![
+            ProbeResult {
+                path: PathBuf::from("/dev/sda1"),
+                fstype: FsType::Bcachefs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 0 }),
+            },
+            ProbeResult {
+                path: PathBuf::from("/dev/sdb1"),
+                fstype: FsType::Ext4,
+                multi: None,
+            },
+            ProbeResult {
+                path: PathBuf::from("/dev/sdc1"),
+                fstype: FsType::Bcachefs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid, nr_devices: 2, dev_idx: 1 }),
+            },
+        ];
+        let (groups, singles) = group_multi_device(probed);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(singles.len(), 1);
+        assert_eq!(singles[0].path, PathBuf::from("/dev/sdb1"));
+        assert!(groups[0].is_complete());
+    }
+
+    #[cfg(all(feature = "fs-bcachefs", feature = "fs-btrfs"))]
+    #[test]
+    fn group_two_separate_multi_filesystems() {
+        let uuid_a = [0x11; 16];
+        let uuid_b = [0x22; 16];
+        let probed = vec![
+            ProbeResult {
+                path: PathBuf::from("/dev/sda1"),
+                fstype: FsType::Bcachefs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid_a, nr_devices: 2, dev_idx: 0 }),
+            },
+            ProbeResult {
+                path: PathBuf::from("/dev/sdb1"),
+                fstype: FsType::Btrfs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid_b, nr_devices: 2, dev_idx: 0 }),
+            },
+            ProbeResult {
+                path: PathBuf::from("/dev/sdc1"),
+                fstype: FsType::Bcachefs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid_a, nr_devices: 2, dev_idx: 1 }),
+            },
+            ProbeResult {
+                path: PathBuf::from("/dev/sdd1"),
+                fstype: FsType::Btrfs,
+                multi: Some(MultiDeviceInfo { fs_uuid: uuid_b, nr_devices: 2, dev_idx: 0 }),
+            },
+        ];
+        let (groups, singles) = group_multi_device(probed);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(singles.len(), 0);
+        // Both groups should be complete
+        assert!(groups[0].is_complete());
+        assert!(groups[1].is_complete());
+    }
+
+    #[test]
+    fn group_empty_input() {
+        let (groups, singles) = group_multi_device(vec![]);
+        assert!(groups.is_empty());
+        assert!(singles.is_empty());
     }
 
     // --- disk-whitelist pattern matching tests ---
